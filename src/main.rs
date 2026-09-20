@@ -24,7 +24,7 @@ use firelite::cloud_sync::CloudSync;
 
 #[derive(Parser, Debug)]
 #[command(name = "firelite")]
-#[command(version, about = "FireLite v0.6.17 command-line database manager")]
+#[command(version, about = "FireLite command-line database manager")]
 struct Cli {
     /// Database path (default: ./firelite.db)
     #[arg(long, global = true, default_value = "./firelite.db")]
