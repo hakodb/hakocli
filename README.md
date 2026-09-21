@@ -1,4 +1,4 @@
-# hako-cli
+# hakocli
 
 Command-line manager for the HakoDB
 embedded document engine: document CRUD, queries, indexes, watch streams,
@@ -6,7 +6,7 @@ and LAN/cloud sync management.
 
 ## Compatibility
 
-| hako-cli | hako core |
+| hakocli | hako core |
 |---|---|
 | 0.2.1 | `cloud_sync` branch (pre-crates.io) |
 
@@ -43,61 +43,61 @@ Seed a collection with sample data, then run typical operations:
 
 ```bash
 # seed 100 documents with a few sample indexes (simple + FTS + composite)
-hako-cli --db ./demo.db seed users 100
+hakocli --db ./demo.db seed users 100
 
 # write / read / update / delete a document
-hako-cli --db ./demo.db set users/alice --data '{"name":"Alice","age":30,"active":true}'
-hako-cli --db ./demo.db get users/alice
-hako-cli --db ./demo.db update users/alice --data '{"age":31}'
-hako-cli --db ./demo.db delete users/alice
+hakocli --db ./demo.db set users/alice --data '{"name":"Alice","age":30,"active":true}'
+hakocli --db ./demo.db get users/alice
+hakocli --db ./demo.db update users/alice --data '{"age":31}'
+hakocli --db ./demo.db delete users/alice
 
 # batch write from a JSON array (path is the collection name)
-hako-cli --db ./demo.db set users --batch --data '[
+hakocli --db ./demo.db set users --batch --data '[
   {"id":"a","data":{"name":"Alice","age":30}},
   {"id":"b","data":{"name":"Bob","age":25}}
 ]'
 
 # query with filters, ordering, and pagination
-hako-cli --db ./demo.db query users --where age:gte:21 --order name:asc --limit 10 --offset 5
-hako-cli --db ./demo.db query users --or status:eq:active --or status:eq:pending --count
+hakocli --db ./demo.db query users --where age:gte:21 --order name:asc --limit 10 --offset 5
+hakocli --db ./demo.db query users --or status:eq:active --or status:eq:pending --count
 
 # deferred blobs: skip blob inflation, return {"__blob__": {"len","offset"}} placeholders
-hako-cli --db ./demo.db query bench --where active:eq:true --defer-blobs --limit 20
+hakocli --db ./demo.db query bench --where active:eq:true --defer-blobs --limit 20
 # resolve later with a point get (always eager):
-hako-cli --db ./demo.db get bench/b_121
+hakocli --db ./demo.db get bench/b_121
 
 # full-text search (match) and projections
-hako-cli --db ./demo.db query users --fts description:seeded
+hakocli --db ./demo.db query users --fts description:seeded
 # prefix / autocomplete search (matches "seeded" from "seed")
-hako-cli --db ./demo.db query users --where description:matchPrefix:seed
-hako-cli --db ./demo.db query users --select name,age
+hakocli --db ./demo.db query users --where description:matchPrefix:seed
+hakocli --db ./demo.db query users --select name,age
 
 # aggregates
-hako-cli --db ./demo.db aggregate users count
-hako-cli --db ./demo.db aggregate users sum --field age --where active:eq:true
-hako-cli --db ./demo.db query users --aggregate count --aggregate avg:age
+hakocli --db ./demo.db aggregate users count
+hakocli --db ./demo.db aggregate users sum --field age --where active:eq:true
+hakocli --db ./demo.db query users --aggregate count --aggregate avg:age
 
 # mass update / mass delete from a query
-hako-cli --db ./demo.db query users --where status:eq:trial --set --data '{"tier":"pro"}'
-hako-cli --db ./demo.db query users --where active:eq:false --delete
+hakocli --db ./demo.db query users --where status:eq:trial --set --data '{"tier":"pro"}'
+hakocli --db ./demo.db query users --where active:eq:false --delete
 
 # index management
-hako-cli --db ./demo.db index create users age
-hako-cli --db ./demo.db index create-composite users --fields age:asc,name:asc
-hako-cli --db ./demo.db index create-fts users description
-hako-cli --db ./demo.db index list users
+hakocli --db ./demo.db index create users age
+hakocli --db ./demo.db index create-composite users --fields age:asc,name:asc
+hakocli --db ./demo.db index create-fts users description
+hakocli --db ./demo.db index list users
 
 # real-time watch (blocks and prints change events until Ctrl+C)
-hako-cli --db ./demo.db watch users
+hakocli --db ./demo.db watch users
 
 # database maintenance and inspection
-hako-cli --db ./demo.db collections
-hako-cli --db ./demo.db stats
-hako-cli --db ./demo.db compact
+hakocli --db ./demo.db collections
+hakocli --db ./demo.db stats
+hakocli --db ./demo.db compact
 
 # REST-like one-shot surface: METHOD PATH [--data JSON]
-hako-cli --db ./demo.db rest GET users/alice
-hako-cli --db ./demo.db rest PATCH users/alice --data '{"age":32}'
+hakocli --db ./demo.db rest GET users/alice
+hakocli --db ./demo.db rest PATCH users/alice --data '{"age":32}'
 ```
 
 Query filter syntax is `field:op:value` where `op` is one of `eq, ne, gt, gte, lt, lte, in, notIn, match, matchPrefix, contains, startsWith, arrayContains, arrayContainsAny`. Array values use JSON, e.g. `tags:in:["a","b"]`. Ordering uses `field:asc` / `field:desc`. `match` runs a full-text (inverted-index) word search; `matchPrefix` is autocomplete-style prefix search over the same index (e.g. `"indom"` matches `"indomie"`).
@@ -110,18 +110,18 @@ Query filter syntax is `field:op:value` where `op` is one of `eq, ne, gt, gte, l
 
 ```bash
 # 1) Plain standalone server (interactive shell only)
-hako-cli --db ./demo.db serve
+hakocli --db ./demo.db serve
 
 # 2) LAN Net Sync mesh node (mDNS discovery, room-key isolated)
-hako-cli --db ./demo.db serve --port 7070 --node-id node-1 --key my-room-key
+hakocli --db ./demo.db serve --port 7070 --node-id node-1 --key my-room-key
 
 # 3) Cloud Sync SERVER (central WebSocket hub on 0.0.0.0:8080)
-hako-cli --db ./cloud.db serve \
+hakocli --db ./cloud.db serve \
   --node-id cloud-1 --key room-key \
   --bind 0.0.0.0:8080 --token s3cret-token
 
 # 4) Cloud Sync CLIENT (connects to the central server, offline-first)
-hako-cli --db ./local.db serve \
+hakocli --db ./local.db serve \
   --node-id device-1 --key room-key --room-name game \
   --server ws://cloud-host:8080 --token s3cret-token
 ```

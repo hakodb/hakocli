@@ -23,7 +23,7 @@ use hakodb::net_sync::{NetSyncer, SyncStatus, DiscoveryMode};
 use hakodb::cloud_sync::CloudSync;
 
 #[derive(Parser, Debug)]
-#[command(name = "hako-cli")]
+#[command(name = "hakocli")]
 #[command(version, about = "HakoDB command-line database manager")]
 struct Cli {
     /// Database path (default: ./hako.db)
@@ -953,9 +953,9 @@ fn seed_collection(db: &Hako, collection: &str, docsize: usize) -> Result<()> {
     println!("  - fts: {collection}.description");
     println!("  - composite: (data asc, score desc)");
     println!("Try:");
-    println!("  hako-cli --db <db> query {collection} --where data:eq:valid");
-    println!("  hako-cli --db <db> query {collection} --where description:match:seeded");
-    println!("  hako-cli --db <db> query {collection} --where data:eq:valid --order score:desc --limit 5");
+    println!("  hakocli --db <db> query {collection} --where data:eq:valid");
+    println!("  hakocli --db <db> query {collection} --where description:match:seeded");
+    println!("  hakocli --db <db> query {collection} --where data:eq:valid --order score:desc --limit 5");
     Ok(())
 }
 
@@ -1505,7 +1505,7 @@ fn run_server(
                 }
             }
 
-            let prompt = format!("hako({} | {}) > ", node_id, status_str);
+            let prompt = format!("hakocli({} | {}) > ", node_id, status_str);
 
             match rl.readline(&prompt) {
                 Ok(line) => {
@@ -1518,7 +1518,7 @@ fn run_server(
                     }
 
                     let _ = rl.add_history_entry(line);
-                    let cmd_str = format!("hako-cli {}", line);
+                    let cmd_str = format!("hakocli {}", line);
                     let args = shlex::split(&cmd_str).unwrap_or_default();
 
                     match Cli::try_parse_from(args) {
