@@ -5,26 +5,26 @@ use std::time::Instant;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use firelite::config::{DurabilityMode, FireLiteConfig};
-use firelite::document::firelite_doc::FireLiteDoc;
-use firelite::document::value::Value;
-use firelite::engine::{BatchMutation, FireLite};
-use firelite::index::composite::definition::SortDirection;
-use firelite::query::filter::Operator;
-use firelite::query::query::{AggregateOp, Query};
+use hakodb::config::{DurabilityMode, HakoConfig};
+use hakodb::document::hako_doc::HakoDoc;
+use hakodb::document::value::Value;
+use hakodb::engine::{BatchMutation, Hako};
+use hakodb::index::composite::definition::SortDirection;
+use hakodb::query::filter::Operator;
+use hakodb::query::query::{AggregateOp, Query};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use serde_json::{json, Map, Value as JsonValue};
 
 #[cfg(feature = "net-sync")]
-use firelite::net_sync::{NetSyncer, SyncStatus, DiscoveryMode};
+use hakodb::net_sync::{NetSyncer, SyncStatus, DiscoveryMode};
 
 #[cfg(feature = "cloud-sync")]
-use firelite::cloud_sync::CloudSync;
+use hakodb::cloud_sync::CloudSync;
 
 #[derive(Parser, Debug)]
 #[command(name = "firelite")]
-#[command(version, about = "FireLite command-line database manager")]
+#[command(version, about = "Hako command-line database manager")]
 struct Cli {
     /// Database path (default: ./firelite.db)
     #[arg(long, global = true, default_value = "./firelite.db")]
@@ -338,8 +338,8 @@ fn main() -> Result<()> {
     execute_command(&db, cli.command, &cli.db, cli.durability, None, cli.time, cli.count)
 }
 
-fn open_db(cli: &Cli) -> Result<FireLite> {
-    let mut cfg = FireLiteConfig::default();
+fn open_db(cli: &Cli) -> Result<Hako> {
+    let mut cfg = HakoConfig::default();
 
     cfg.durability_mode = match cli.durability {
         DurabilityArg::Always => DurabilityMode::Always,
@@ -362,7 +362,7 @@ fn open_db(cli: &Cli) -> Result<FireLite> {
     }
 
 
-    FireLite::open(&cli.db, cfg)
+    Hako::open(&cli.db, cfg)
         .with_context(|| format!("failed to open db at {}", &cli.db))
         .map(|db| {
             // ponytail: open() returns while index recovery still runs, and
@@ -411,7 +411,7 @@ fn emit_json(value: &JsonValue, output: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn list_collections(db: &FireLite) -> Result<()> {
+fn list_collections(db: &Hako) -> Result<()> {
     let cols = db.list_collections()?;
     let marked: Vec<String> = cols.into_iter()
         .map(|c| if db.is_collection_local(&c) { format!("{c} (local-only)") } else { c })
@@ -443,7 +443,7 @@ fn split_doc_path_with_fields(path: &str) -> Result<(&str, &str, Vec<String>)> {
 }
 
 fn get_doc(
-    db: &FireLite,
+    db: &Hako,
     path: &str,
     output: Option<&str>,
     is_set: bool,
@@ -478,7 +478,7 @@ fn get_doc(
     Ok(())
 }
 
-fn set_doc(db: &FireLite, path: &str, data: &str, merge: bool, is_batch: bool, show_time: bool) -> Result<()> {
+fn set_doc(db: &Hako, path: &str, data: &str, merge: bool, is_batch: bool, show_time: bool) -> Result<()> {
     let start_time = Instant::now();
     if is_batch {
         let collection = path; // In batch mode, path is just the collection name
@@ -508,7 +508,7 @@ fn set_doc(db: &FireLite, path: &str, data: &str, merge: bool, is_batch: bool, s
             let mut doc = if merge {
                 db.get(collection, &doc_id)?.unwrap_or_default()
             } else {
-                FireLiteDoc::default()
+                HakoDoc::default()
             };
 
             for (k, v) in raw_data
@@ -521,7 +521,7 @@ fn set_doc(db: &FireLite, path: &str, data: &str, merge: bool, is_batch: bool, s
                 doc.insert(k.clone(), json_to_fire(v.clone())?);
             }
 
-            mutations.push(firelite::engine::BatchMutation::Put {
+            mutations.push(hakodb::engine::BatchMutation::Put {
                 collection: collection.to_string(),
                 doc_id: doc_id.clone(),
                 doc,
@@ -537,7 +537,7 @@ fn set_doc(db: &FireLite, path: &str, data: &str, merge: bool, is_batch: bool, s
         let mut doc = if merge {
             db.get(collection, doc_id)?.unwrap_or_default()
         } else {
-            FireLiteDoc::default()
+            HakoDoc::default()
         };
 
         if fields.is_empty() {
@@ -569,7 +569,7 @@ fn set_doc(db: &FireLite, path: &str, data: &str, merge: bool, is_batch: bool, s
     Ok(())
 }
 
-fn delete_doc(db: &FireLite, path: &str, is_batch: bool, data: Option<&str>, show_time: bool, local_only: bool) -> Result<()> {
+fn delete_doc(db: &Hako, path: &str, is_batch: bool, data: Option<&str>, show_time: bool, local_only: bool) -> Result<()> {
     let start_time = Instant::now();
     if is_batch {
         let collection = path;
@@ -585,7 +585,7 @@ fn delete_doc(db: &FireLite, path: &str, is_batch: bool, data: Option<&str>, sho
             db.delete_ids_local(collection, &id_list)?
         } else {
             let mutations: Vec<_> = id_list.iter()
-                .map(|id| firelite::engine::BatchMutation::Delete {
+                .map(|id| hakodb::engine::BatchMutation::Delete {
                     collection: collection.to_string(),
                     doc_id: id.clone(),
                 })
@@ -611,14 +611,14 @@ fn delete_doc(db: &FireLite, path: &str, is_batch: bool, data: Option<&str>, sho
     Ok(())
 }
 
-fn run_tx_set(db: &FireLite, path: &str, data: &str) -> Result<()> {
+fn run_tx_set(db: &Hako, path: &str, data: &str) -> Result<()> {
     let (collection, doc_id) = split_doc_path(path)?;
     let payload: JsonValue = serde_json::from_str(data).context("data must be valid JSON")?;
     let obj = payload
         .as_object()
         .ok_or_else(|| anyhow!("data must be a JSON object"))?;
 
-    let mut doc = FireLiteDoc::default();
+    let mut doc = HakoDoc::default();
     for (k, v) in obj {
         doc.insert(k.clone(), json_to_fire(v.clone())?);
     }
@@ -660,7 +660,7 @@ fn parse_composite_fields(input: &str) -> Result<Vec<(String, SortDirection)>> {
 }
 
 fn run_query(
-    db: &FireLite,
+    db: &Hako,
     collection: &str,
     filters: &[String],
     and_filters: &[String],
@@ -805,7 +805,7 @@ fn run_query(
 }
 
 fn run_aggregate(
-    db: &FireLite,
+    db: &Hako,
     collection: &str,
     kind: AggregateKindArg,
     field: Option<&str>,
@@ -862,7 +862,7 @@ fn parse_aggregate_spec(input: &str) -> Result<AggregateOp> {
     }
 }
 
-fn watch_collection(db: &FireLite, collection: &str) -> Result<()> {
+fn watch_collection(db: &Hako, collection: &str) -> Result<()> {
     println!("Watching [{collection}] ... Ctrl+C to exit");
     let rx = db.watch_collection(collection);
     while let Ok(event) = rx.recv() {
@@ -875,7 +875,7 @@ fn watch_collection(db: &FireLite, collection: &str) -> Result<()> {
     Ok(())
 }
 
-fn seed_collection(db: &FireLite, collection: &str, docsize: usize) -> Result<()> {
+fn seed_collection(db: &Hako, collection: &str, docsize: usize) -> Result<()> {
     if docsize == 0 {
         bail!("docsize must be > 0");
     }
@@ -896,7 +896,7 @@ fn seed_collection(db: &FireLite, collection: &str, docsize: usize) -> Result<()
 
     let mut mutations = Vec::with_capacity(docsize);
     for i in 0..docsize {
-        let mut doc = FireLiteDoc::default();
+        let mut doc = HakoDoc::default();
         let valid = i % 2 == 0;
         let status = if i % 3 == 0 { "active" } else { "idle" };
         let score = ((i * 37) % 1000) as i64;
@@ -960,7 +960,7 @@ fn seed_collection(db: &FireLite, collection: &str, docsize: usize) -> Result<()
 }
 
 fn run_rest(
-    db: &FireLite,
+    db: &Hako,
     method: &str,
     path: &str,
     data: Option<&str>,
@@ -1185,7 +1185,7 @@ fn fire_to_json(v: &Value) -> JsonValue {
     v.to_json()
 }
 
-fn doc_to_json(id: &str, doc: &FireLiteDoc) -> JsonValue {
+fn doc_to_json(id: &str, doc: &HakoDoc) -> JsonValue {
     let mut json = doc.to_json();
     if let Some(obj) = json.as_object_mut() {
         obj.insert("id".to_string(), serde_json::json!(id));
@@ -1214,7 +1214,7 @@ fn generate_id() -> String {
 
 // 1. Move the match logic into a reusable function
 fn execute_command(
-    db: &FireLite,
+    db: &Hako,
     command: Commands,
     _db_path: &str,
     _durability: DurabilityArg,
@@ -1472,7 +1472,7 @@ fn run_server(
             None
         };
 
-        println!("🔥 FireLite v0.7.1 Server Active");
+        println!("🔥 Hako v0.7.1 Server Active");
         println!("🆔 Node ID: {}", node_id);
 
         #[cfg(feature = "net-sync")]

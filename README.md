@@ -18,3 +18,130 @@ cargo build --release
 
 The `firelite` dependency tracks the core `cloud_sync` branch until the
 first crates.io release, then pins to `version = "0.8"`.
+
+## User guide
+
+Two modes:
+
+1. **Non-serve mode (one-shot commands)** — run a single command against a database and exit. Ideal for scripting, debugging, and shell pipelines.
+2. **Serve mode (interactive REPL + networking)** — starts a server loop with an interactive prompt, optionally enabling **Net Sync** (LAN mesh) and/or **Cloud Sync** (server or client).
+
+### Global options
+
+| Flag | Description |
+|---|---|
+| `--db <path>` | Database path (default `./firelite.db`) |
+| `--durability <mode>` | `always` \| `interval` \| `manual` \| `on-commit` (default `on-commit`) |
+| `--encryption-key <key>` | Enables storage encryption with the given master key |
+| `--encrypted-cols <list>` | Comma-separated collections to encrypt (empty = all) |
+| `--time` | Print execution time for the operation |
+| `--count` | Print the number of results (queries and collections) |
+
+### Non-serve mode: one-shot commands
+
+Seed a collection with sample data, then run typical operations:
+
+```bash
+# seed 100 documents with a few sample indexes (simple + FTS + composite)
+firelite-cli --db ./demo.db seed users 100
+
+# write / read / update / delete a document
+firelite-cli --db ./demo.db set users/alice --data '{"name":"Alice","age":30,"active":true}'
+firelite-cli --db ./demo.db get users/alice
+firelite-cli --db ./demo.db update users/alice --data '{"age":31}'
+firelite-cli --db ./demo.db delete users/alice
+
+# batch write from a JSON array (path is the collection name)
+firelite-cli --db ./demo.db set users --batch --data '[
+  {"id":"a","data":{"name":"Alice","age":30}},
+  {"id":"b","data":{"name":"Bob","age":25}}
+]'
+
+# query with filters, ordering, and pagination
+firelite-cli --db ./demo.db query users --where age:gte:21 --order name:asc --limit 10 --offset 5
+firelite-cli --db ./demo.db query users --or status:eq:active --or status:eq:pending --count
+
+# deferred blobs: skip blob inflation, return {"__blob__": {"len","offset"}} placeholders
+firelite-cli --db ./demo.db query bench --where active:eq:true --defer-blobs --limit 20
+# resolve later with a point get (always eager):
+firelite-cli --db ./demo.db get bench/b_121
+
+# full-text search (match) and projections
+firelite-cli --db ./demo.db query users --fts description:seeded
+# prefix / autocomplete search (matches "seeded" from "seed")
+firelite-cli --db ./demo.db query users --where description:matchPrefix:seed
+firelite-cli --db ./demo.db query users --select name,age
+
+# aggregates
+firelite-cli --db ./demo.db aggregate users count
+firelite-cli --db ./demo.db aggregate users sum --field age --where active:eq:true
+firelite-cli --db ./demo.db query users --aggregate count --aggregate avg:age
+
+# mass update / mass delete from a query
+firelite-cli --db ./demo.db query users --where status:eq:trial --set --data '{"tier":"pro"}'
+firelite-cli --db ./demo.db query users --where active:eq:false --delete
+
+# index management
+firelite-cli --db ./demo.db index create users age
+firelite-cli --db ./demo.db index create-composite users --fields age:asc,name:asc
+firelite-cli --db ./demo.db index create-fts users description
+firelite-cli --db ./demo.db index list users
+
+# real-time watch (blocks and prints change events until Ctrl+C)
+firelite-cli --db ./demo.db watch users
+
+# database maintenance and inspection
+firelite-cli --db ./demo.db collections
+firelite-cli --db ./demo.db stats
+firelite-cli --db ./demo.db compact
+
+# REST-like one-shot surface: METHOD PATH [--data JSON]
+firelite-cli --db ./demo.db rest GET users/alice
+firelite-cli --db ./demo.db rest PATCH users/alice --data '{"age":32}'
+```
+
+Query filter syntax is `field:op:value` where `op` is one of `eq, ne, gt, gte, lt, lte, in, notIn, match, matchPrefix, contains, startsWith, arrayContains, arrayContainsAny`. Array values use JSON, e.g. `tags:in:["a","b"]`. Ordering uses `field:asc` / `field:desc`. `match` runs a full-text (inverted-index) word search; `matchPrefix` is autocomplete-style prefix search over the same index (e.g. `"indom"` matches `"indomie"`).
+
+> **Windows PowerShell note:** when passing inline JSON to `--data`, use `--fromfile payload.json` (or `cmd.exe`) instead of `'{"key":"value"}'` — PowerShell 5.1 strips the inner double quotes when invoking native executables.
+
+### Serve mode: interactive REPL + networking
+
+`serve` opens the database and drops you into an interactive prompt where every CLI command keeps working (type `collections`, `query users --where ...`, `peers`, `exit`):
+
+```bash
+# 1) Plain standalone server (interactive shell only)
+firelite-cli --db ./demo.db serve
+
+# 2) LAN Net Sync mesh node (mDNS discovery, room-key isolated)
+firelite-cli --db ./demo.db serve --port 7070 --node-id node-1 --key my-room-key
+
+# 3) Cloud Sync SERVER (central WebSocket hub on 0.0.0.0:8080)
+firelite-cli --db ./cloud.db serve \
+  --node-id cloud-1 --key room-key \
+  --bind 0.0.0.0:8080 --token s3cret-token
+
+# 4) Cloud Sync CLIENT (connects to the central server, offline-first)
+firelite-cli --db ./local.db serve \
+  --node-id device-1 --key room-key --room-name game \
+  --server ws://cloud-host:8080 --token s3cret-token
+```
+
+The prompt shows the live sync status, e.g.:
+
+```text
+firelite(node-1 | LAN:Online (Peers:2)) > query users --where active:eq:true --limit 10
+firelite(node-1 | LAN:Online (Peers:2)) > peers
+firelite(node-1 | LAN:Online (Peers:2)) > exit
+```
+
+#### Serve flags
+
+| Flag | Purpose |
+|---|---|
+| `--port <u16>` | Enable **Net Sync**; start LAN mesh listener on this port |
+| `--node-id <id>` | Unique node identifier |
+| `--key <key>` | Room key (SHA-256 hashed for room isolation) |
+| `--bind <addr>` | Enable **Cloud Sync server** on this bind address (e.g. `0.0.0.0:8080`) |
+| `--server <url>` | Enable **Cloud Sync client**; connect to this server (`ws://`, `wss://`, or `https://`) |
+| `--room-name <name>` | Room name for Cloud Sync clients (defaults to `default`); the server hosts any room |
+| `--token <token>` | Auth token shared with the cloud server |
