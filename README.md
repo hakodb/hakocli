@@ -1,12 +1,12 @@
-# firelite-cli
+# hako-cli
 
-Command-line manager for the [FireLite](https://github.com/rizaptk/firelite)
+Command-line manager for the HakoDB
 embedded document engine: document CRUD, queries, indexes, watch streams,
 and LAN/cloud sync management.
 
 ## Compatibility
 
-| firelite-cli | firelite core |
+| hako-cli | hako core |
 |---|---|
 | 0.2.1 | `cloud_sync` branch (pre-crates.io) |
 
@@ -16,7 +16,7 @@ and LAN/cloud sync management.
 cargo build --release
 ```
 
-The `firelite` dependency tracks the core `cloud_sync` branch until the
+The `hakodb` dependency tracks the core `cloud_sync` branch until the
 first crates.io release, then pins to `version = "0.8"`.
 
 ## User guide
@@ -30,7 +30,7 @@ Two modes:
 
 | Flag | Description |
 |---|---|
-| `--db <path>` | Database path (default `./firelite.db`) |
+| `--db <path>` | Database path (default `./hako.db`) |
 | `--durability <mode>` | `always` \| `interval` \| `manual` \| `on-commit` (default `on-commit`) |
 | `--encryption-key <key>` | Enables storage encryption with the given master key |
 | `--encrypted-cols <list>` | Comma-separated collections to encrypt (empty = all) |
@@ -43,61 +43,61 @@ Seed a collection with sample data, then run typical operations:
 
 ```bash
 # seed 100 documents with a few sample indexes (simple + FTS + composite)
-firelite-cli --db ./demo.db seed users 100
+hako-cli --db ./demo.db seed users 100
 
 # write / read / update / delete a document
-firelite-cli --db ./demo.db set users/alice --data '{"name":"Alice","age":30,"active":true}'
-firelite-cli --db ./demo.db get users/alice
-firelite-cli --db ./demo.db update users/alice --data '{"age":31}'
-firelite-cli --db ./demo.db delete users/alice
+hako-cli --db ./demo.db set users/alice --data '{"name":"Alice","age":30,"active":true}'
+hako-cli --db ./demo.db get users/alice
+hako-cli --db ./demo.db update users/alice --data '{"age":31}'
+hako-cli --db ./demo.db delete users/alice
 
 # batch write from a JSON array (path is the collection name)
-firelite-cli --db ./demo.db set users --batch --data '[
+hako-cli --db ./demo.db set users --batch --data '[
   {"id":"a","data":{"name":"Alice","age":30}},
   {"id":"b","data":{"name":"Bob","age":25}}
 ]'
 
 # query with filters, ordering, and pagination
-firelite-cli --db ./demo.db query users --where age:gte:21 --order name:asc --limit 10 --offset 5
-firelite-cli --db ./demo.db query users --or status:eq:active --or status:eq:pending --count
+hako-cli --db ./demo.db query users --where age:gte:21 --order name:asc --limit 10 --offset 5
+hako-cli --db ./demo.db query users --or status:eq:active --or status:eq:pending --count
 
 # deferred blobs: skip blob inflation, return {"__blob__": {"len","offset"}} placeholders
-firelite-cli --db ./demo.db query bench --where active:eq:true --defer-blobs --limit 20
+hako-cli --db ./demo.db query bench --where active:eq:true --defer-blobs --limit 20
 # resolve later with a point get (always eager):
-firelite-cli --db ./demo.db get bench/b_121
+hako-cli --db ./demo.db get bench/b_121
 
 # full-text search (match) and projections
-firelite-cli --db ./demo.db query users --fts description:seeded
+hako-cli --db ./demo.db query users --fts description:seeded
 # prefix / autocomplete search (matches "seeded" from "seed")
-firelite-cli --db ./demo.db query users --where description:matchPrefix:seed
-firelite-cli --db ./demo.db query users --select name,age
+hako-cli --db ./demo.db query users --where description:matchPrefix:seed
+hako-cli --db ./demo.db query users --select name,age
 
 # aggregates
-firelite-cli --db ./demo.db aggregate users count
-firelite-cli --db ./demo.db aggregate users sum --field age --where active:eq:true
-firelite-cli --db ./demo.db query users --aggregate count --aggregate avg:age
+hako-cli --db ./demo.db aggregate users count
+hako-cli --db ./demo.db aggregate users sum --field age --where active:eq:true
+hako-cli --db ./demo.db query users --aggregate count --aggregate avg:age
 
 # mass update / mass delete from a query
-firelite-cli --db ./demo.db query users --where status:eq:trial --set --data '{"tier":"pro"}'
-firelite-cli --db ./demo.db query users --where active:eq:false --delete
+hako-cli --db ./demo.db query users --where status:eq:trial --set --data '{"tier":"pro"}'
+hako-cli --db ./demo.db query users --where active:eq:false --delete
 
 # index management
-firelite-cli --db ./demo.db index create users age
-firelite-cli --db ./demo.db index create-composite users --fields age:asc,name:asc
-firelite-cli --db ./demo.db index create-fts users description
-firelite-cli --db ./demo.db index list users
+hako-cli --db ./demo.db index create users age
+hako-cli --db ./demo.db index create-composite users --fields age:asc,name:asc
+hako-cli --db ./demo.db index create-fts users description
+hako-cli --db ./demo.db index list users
 
 # real-time watch (blocks and prints change events until Ctrl+C)
-firelite-cli --db ./demo.db watch users
+hako-cli --db ./demo.db watch users
 
 # database maintenance and inspection
-firelite-cli --db ./demo.db collections
-firelite-cli --db ./demo.db stats
-firelite-cli --db ./demo.db compact
+hako-cli --db ./demo.db collections
+hako-cli --db ./demo.db stats
+hako-cli --db ./demo.db compact
 
 # REST-like one-shot surface: METHOD PATH [--data JSON]
-firelite-cli --db ./demo.db rest GET users/alice
-firelite-cli --db ./demo.db rest PATCH users/alice --data '{"age":32}'
+hako-cli --db ./demo.db rest GET users/alice
+hako-cli --db ./demo.db rest PATCH users/alice --data '{"age":32}'
 ```
 
 Query filter syntax is `field:op:value` where `op` is one of `eq, ne, gt, gte, lt, lte, in, notIn, match, matchPrefix, contains, startsWith, arrayContains, arrayContainsAny`. Array values use JSON, e.g. `tags:in:["a","b"]`. Ordering uses `field:asc` / `field:desc`. `match` runs a full-text (inverted-index) word search; `matchPrefix` is autocomplete-style prefix search over the same index (e.g. `"indom"` matches `"indomie"`).
@@ -110,18 +110,18 @@ Query filter syntax is `field:op:value` where `op` is one of `eq, ne, gt, gte, l
 
 ```bash
 # 1) Plain standalone server (interactive shell only)
-firelite-cli --db ./demo.db serve
+hako-cli --db ./demo.db serve
 
 # 2) LAN Net Sync mesh node (mDNS discovery, room-key isolated)
-firelite-cli --db ./demo.db serve --port 7070 --node-id node-1 --key my-room-key
+hako-cli --db ./demo.db serve --port 7070 --node-id node-1 --key my-room-key
 
 # 3) Cloud Sync SERVER (central WebSocket hub on 0.0.0.0:8080)
-firelite-cli --db ./cloud.db serve \
+hako-cli --db ./cloud.db serve \
   --node-id cloud-1 --key room-key \
   --bind 0.0.0.0:8080 --token s3cret-token
 
 # 4) Cloud Sync CLIENT (connects to the central server, offline-first)
-firelite-cli --db ./local.db serve \
+hako-cli --db ./local.db serve \
   --node-id device-1 --key room-key --room-name game \
   --server ws://cloud-host:8080 --token s3cret-token
 ```
