@@ -23,11 +23,11 @@ use hakodb::net_sync::{NetSyncer, SyncStatus, DiscoveryMode};
 use hakodb::cloud_sync::CloudSync;
 
 #[derive(Parser, Debug)]
-#[command(name = "firelite")]
-#[command(version, about = "Hako command-line database manager")]
+#[command(name = "hako-cli")]
+#[command(version, about = "HakoDB command-line database manager")]
 struct Cli {
-    /// Database path (default: ./firelite.db)
-    #[arg(long, global = true, default_value = "./firelite.db")]
+    /// Database path (default: ./hako.db)
+    #[arg(long, global = true, default_value = "./hako.db")]
     db: String,
 
     /// Durability mode (always | interval | manual | on-commit)
@@ -910,7 +910,7 @@ fn seed_collection(db: &Hako, collection: &str, docsize: usize) -> Result<()> {
         doc.insert(
             "description".to_string(),
             Value::String(format!(
-                "seeded firelite document {} with {} state and score {}",
+                "seeded hako document {} with {} state and score {}",
                 i, status, score
             )),
         );
@@ -953,9 +953,9 @@ fn seed_collection(db: &Hako, collection: &str, docsize: usize) -> Result<()> {
     println!("  - fts: {collection}.description");
     println!("  - composite: (data asc, score desc)");
     println!("Try:");
-    println!("  firelite-cli --db <db> query {collection} --where data:eq:valid");
-    println!("  firelite-cli --db <db> query {collection} --where description:match:seeded");
-    println!("  firelite-cli --db <db> query {collection} --where data:eq:valid --order score:desc --limit 5");
+    println!("  hako-cli --db <db> query {collection} --where data:eq:valid");
+    println!("  hako-cli --db <db> query {collection} --where description:match:seeded");
+    println!("  hako-cli --db <db> query {collection} --where data:eq:valid --order score:desc --limit 5");
     Ok(())
 }
 
@@ -1505,7 +1505,7 @@ fn run_server(
                 }
             }
 
-            let prompt = format!("firelite({} | {}) > ", node_id, status_str);
+            let prompt = format!("hako({} | {}) > ", node_id, status_str);
 
             match rl.readline(&prompt) {
                 Ok(line) => {
@@ -1518,7 +1518,7 @@ fn run_server(
                     }
 
                     let _ = rl.add_history_entry(line);
-                    let cmd_str = format!("firelite {}", line);
+                    let cmd_str = format!("hako-cli {}", line);
                     let args = shlex::split(&cmd_str).unwrap_or_default();
 
                     match Cli::try_parse_from(args) {

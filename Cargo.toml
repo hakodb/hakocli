@@ -1,8 +1,8 @@
 [package]
-name = "firelite-cli"
+name = "hako-cli"
 version = "0.2.1"
 edition = "2021"
-description = "Command-line manager for the FireLite embedded document engine"
+description = "Command-line manager for the HakoDB embedded document engine"
 
 [features]
 default = ["net-sync", "cloud-sync"]
