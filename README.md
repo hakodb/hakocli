@@ -129,9 +129,9 @@ hako-cli --db ./local.db serve \
 The prompt shows the live sync status, e.g.:
 
 ```text
-firelite(node-1 | LAN:Online (Peers:2)) > query users --where active:eq:true --limit 10
-firelite(node-1 | LAN:Online (Peers:2)) > peers
-firelite(node-1 | LAN:Online (Peers:2)) > exit
+hako(node-1 | LAN:Online (Peers:2)) > query users --where active:eq:true --limit 10
+hako(node-1 | LAN:Online (Peers:2)) > peers
+hako(node-1 | LAN:Online (Peers:2)) > exit
 ```
 
 #### Serve flags
