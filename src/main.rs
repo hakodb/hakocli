@@ -1472,17 +1472,17 @@ fn run_server(
             None
         };
 
-        println!("🔥 Hako v0.7.1 Server Active");
-        println!("🆔 Node ID: {}", node_id);
+        println!("hakocli v{} - server active", env!("CARGO_PKG_VERSION"));
+        println!("  Node ID: {}", node_id);
 
         #[cfg(feature = "net-sync")]
         if let Some(p) = port {
-            println!("🌐 LAN Net Sync: Active on port {}", p);
+            println!("  LAN Net Sync: active on port {}", p);
         }
 
         #[cfg(feature = "cloud-sync")]
         if let Some((_, ref desc)) = cloud_syncer {
-            println!("☁️  Cloud Sync: Active [{}]", desc);
+            println!("  Cloud Sync: active [{}]", desc);
         }
 
         let mut rl = DefaultEditor::new().map_err(|e| anyhow!("Readline error: {}", e))?;

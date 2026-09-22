@@ -10,7 +10,17 @@ and LAN/cloud sync management.
 
 | hakocli | hako core |
 |---|---|
-| 0.2.1 | `cloud_sync` branch (pre-crates.io) |
+| 0.2.1 | `hakodb 0.8.23+` (crates.io) |
+
+## Install
+
+```sh
+# from source
+cargo install --path .
+
+# or straight from GitHub (pre-crates.io publish)
+cargo install --git https://github.com/hakodb/hakocli
+```
 
 ## Build
 
@@ -18,8 +28,9 @@ and LAN/cloud sync management.
 cargo build --release
 ```
 
-The `hakodb` dependency tracks the core `cloud_sync` branch until the
-first crates.io release, then pins to `version = "0.8"`.
+The binary lands at `target/release/hakocli`. The `hakodb` dependency
+comes from crates.io; sync modes wire through the `net-sync` /
+`cloud-sync` cargo features (both on by default).
 
 ## User guide
 
