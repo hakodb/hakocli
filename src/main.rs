@@ -76,7 +76,7 @@ enum Commands {
     /// Vacuum a collection: purge tombstones (no sync traffic); next
     /// handshake pulls peer state. The restore half of a local reset.
     Vacuum { collection: String },
-    /// Get one document by path: <collection>/<doc_id>
+    /// Get one document by path: `<collection>/<doc_id>`
     Get {
         path: String,
         /// Write JSON output to file path
@@ -119,7 +119,7 @@ enum Commands {
         #[arg(long)]
         batch: Option<bool>,
     },
-    /// Delete one document by path: <collection>/<doc_id>
+    /// Delete one document by path: `<collection>/<doc_id>`
     Delete {
         path: String,
         /// Batch Write
@@ -172,7 +172,7 @@ enum Commands {
         /// resolve later with `get`. List views over image docs stay tiny.
         #[arg(long)]
         defer_blobs: bool,
-        /// Repeated aggregate: count | sum:<field> | avg:<field>
+        /// Repeated aggregate: count | sum:`<field>` | avg:`<field>`
         #[arg(long = "aggregate")]
         aggregates: Vec<String>,
         /// Write JSON output to file path
@@ -266,7 +266,7 @@ enum Commands {
         server: Option<String>,
 
         /// Room name for Cloud Sync (used by the client to join a room).
-        /// The server stores room collections as <room_name>_<collection>.
+        /// The server stores room collections as `<room_name>_<collection>`.
         #[arg(long)]
         room_name: Option<String>,
 
