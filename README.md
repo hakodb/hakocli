@@ -10,7 +10,7 @@ and LAN/cloud sync management.
 
 | hakocli | hako core |
 |---|---|
-| 0.2.1 | `hakodb 0.8.23+` (crates.io) |
+| 0.2.2 | `hakodb 0.8.23+` (crates.io) |
 
 ## Install
 
