@@ -26,13 +26,18 @@ use hakodb::cloud_sync::CloudSync;
 #[command(name = "hakocli")]
 #[command(version, about = "HakoDB command-line database manager")]
 struct Cli {
+    /// Load options from a TOML file. Explicit CLI flags always win over
+    /// the file; anything set in neither falls back to built-in defaults.
+    #[arg(long, global = true)]
+    config: Option<String>,
+
     /// Database path (default: ./hako.db)
-    #[arg(long, global = true, default_value = "./hako.db")]
-    db: String,
+    #[arg(long, global = true)]
+    db: Option<String>,
 
     /// Durability mode (always | interval | manual | on-commit)
-    #[arg(long, global = true, default_value = "on-commit")]
-    durability: DurabilityArg,
+    #[arg(long, global = true, value_enum)]
+    durability: Option<DurabilityArg>,
 
     /// Encryption secret key (enables storage encryption)
     #[arg(long, global = true)]
@@ -54,7 +59,8 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 enum DurabilityArg {
     Always,
     Interval,
@@ -243,19 +249,19 @@ enum Commands {
     /// main serve
     Serve {
         #[arg(long)]
-        port: u16,
+        port: Option<u16>,
 
         #[arg(long)]
-        node_id: String,
+        node_id: Option<String>,
 
-        #[arg(long, default_value = "default_key")]
-        key: String,
+        #[arg(long)]
+        key: Option<String>,
 
         /// LAN discovery transports: mdns (desktop default), broadcast
         /// (mobile default, no multicast), or both (mixed groups — a desktop
         /// joining mobile peers must opt into both or broadcast).
-        #[arg(long, value_enum, default_value = "mdns")]
-        discovery: DiscoveryModeArg,
+        #[arg(long, value_enum)]
+        discovery: Option<DiscoveryModeArg>,
 
         /// Cloud Sync Server bind address (e.g. 0.0.0.0:8080)
         #[arg(long)]
@@ -271,8 +277,8 @@ enum Commands {
         room_name: Option<String>,
 
         /// Auth Token for Cloud Sync
-        #[arg(long, default_value = "default_token")]
-        token: String,
+        #[arg(long)]
+        token: Option<String>,
     },
 }
 
@@ -305,7 +311,8 @@ enum IndexCommands {
     }
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+#[derive(Copy, Clone, Debug, ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 enum DiscoveryModeArg {
     Mdns,
     Broadcast,
@@ -319,8 +326,72 @@ enum AggregateKindArg {
     Avg,
 }
 
+/// TOML config file shape (`--config`). Every field is optional: an absent
+/// field falls back to the CLI flag, then to the built-in default.
+/// Precedence is always CLI flag > config file > default.
+///
+/// ```toml
+/// db = "./demo.db"
+/// durability = "on-commit"   # always | interval | manual | on-commit
+/// # encryption_key = "secret"
+/// # encrypted_cols = "users,tx"
+/// time = true
+/// count = false
+///
+/// [serve]
+/// port = 7070
+/// node_id = "node-1"
+/// key = "room-key"
+/// discovery = "both"         # mdns | broadcast | both
+/// # bind = "0.0.0.0:8080"    # cloud server, or:
+/// # server = "ws://127.0.0.1:8080"  # cloud client
+/// # room_name = "game"
+/// token = "s3cret"
+/// ```
+#[derive(Debug, Default, serde::Deserialize)]
+struct FileConfig {
+    db: Option<String>,
+    durability: Option<DurabilityArg>,
+    encryption_key: Option<String>,
+    encrypted_cols: Option<String>,
+    time: Option<bool>,
+    count: Option<bool>,
+    #[serde(default)]
+    serve: ServeFileConfig,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ServeFileConfig {
+    port: Option<u16>,
+    node_id: Option<String>,
+    key: Option<String>,
+    discovery: Option<DiscoveryModeArg>,
+    bind: Option<String>,
+    server: Option<String>,
+    room_name: Option<String>,
+    token: Option<String>,
+}
+
+/// Fully resolved serve options (CLI > file > default). Passed as one
+/// value so `run_server` doesn't grow a new parameter per option.
+#[derive(Debug, Clone)]
+struct ServeParams {
+    port: Option<u16>,
+    node_id: String,
+    key: String,
+    discovery: DiscoveryModeArg,
+    bind: Option<String>,
+    server: Option<String>,
+    room_name: Option<String>,
+    token: String,
+}
+
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    // Parsed once: both the global overlay and the serve overlay below
+    // read from this value (no re-reads).
+    let fc = load_file_config(cli.config.as_deref())?;
+    apply_config(&mut cli, &fc)?;
 
     if let Commands::Serve {
         port,
@@ -330,18 +401,126 @@ fn main() -> Result<()> {
         bind,
         server,
         room_name,
-        token, } = &cli.command {
-        return run_server(&cli, Some(*port), node_id, key, *discovery, bind.as_deref(), server.as_deref(), room_name.as_deref(), token);
+        token,
+    } = &cli.command
+    {
+        let fs = &fc.serve;
+        let params = ServeParams {
+            port: *port,
+            node_id: node_id.clone().or_else(|| fs.node_id.clone()).ok_or_else(|| {
+                anyhow!("node identity needed: pass --node-id or set serve.node_id in --config")
+            })?,
+            key: key
+                .clone()
+                .or_else(|| fs.key.clone())
+                .unwrap_or_else(|| "default_key".to_string()),
+            discovery: discovery.or_else(|| fs.discovery).unwrap_or(DiscoveryModeArg::Mdns),
+            bind: bind.clone().or_else(|| fs.bind.clone()),
+            server: server.clone().or_else(|| fs.server.clone()),
+            room_name: room_name.clone().or_else(|| fs.room_name.clone()),
+            token: token
+                .clone()
+                .or_else(|| fs.token.clone())
+                .unwrap_or_else(|| "default_token".to_string()),
+        };
+        return run_server(&cli, params);
     }
 
     let db = open_db(&cli)?;
-    execute_command(&db, cli.command, &cli.db, cli.durability, None, cli.time, cli.count)
+    // Owned copy first: `cli.command` moves below while the path borrows `cli`.
+    let db_path = cli_db(&cli).to_string();
+    execute_command(
+        &db,
+        cli.command,
+        &db_path,
+        cli.durability.unwrap_or(DurabilityArg::OnCommit),
+        None,
+        cli.time,
+        cli.count,
+    )
+}
+
+/// Database path after config resolution (flag > file > ./hako.db).
+fn cli_db(cli: &Cli) -> &str {
+    cli.db.as_deref().unwrap_or("./hako.db")
+}
+
+/// Reads + parses `--config` (TOML). No flag means "no file": an empty
+/// config, so every overlay below is a no-op.
+fn load_file_config(path: Option<&str>) -> Result<FileConfig> {
+    match path {
+        None => Ok(FileConfig::default()),
+        Some(p) => {
+            let text = std::fs::read_to_string(p)
+                .with_context(|| format!("failed to read --config {p}"))?;
+            toml::from_str(&text).with_context(|| format!("failed to parse --config {p} as TOML"))
+        }
+    }
+}
+
+/// Fills every option the CLI left unset from the config file. CLI flags
+/// always win; fields set in neither keep `None` for late defaults.
+fn apply_config(cli: &mut Cli, fc: &FileConfig) -> Result<()> {
+    // (file already loaded by load_file_config; overlays below use `fc`.)
+    if cli.db.is_none() {
+        cli.db = fc.db.clone();
+    }
+    if cli.durability.is_none() {
+        cli.durability = fc.durability;
+    }
+    if cli.encryption_key.is_none() {
+        cli.encryption_key = fc.encryption_key.clone();
+    }
+    if cli.encrypted_cols.is_none() {
+        cli.encrypted_cols = fc.encrypted_cols.clone();
+    }
+    cli.time |= fc.time.unwrap_or(false);
+    cli.count |= fc.count.unwrap_or(false);
+
+    if let Commands::Serve {
+        port,
+        node_id,
+        key,
+        discovery,
+        bind,
+        server,
+        room_name,
+        token,
+    } = &mut cli.command
+    {
+        let s = &fc.serve;
+        if port.is_none() {
+            *port = s.port;
+        }
+        if node_id.is_none() {
+            *node_id = s.node_id.clone();
+        }
+        if key.is_none() {
+            *key = s.key.clone();
+        }
+        if discovery.is_none() {
+            *discovery = s.discovery;
+        }
+        if bind.is_none() {
+            *bind = s.bind.clone();
+        }
+        if server.is_none() {
+            *server = s.server.clone();
+        }
+        if room_name.is_none() {
+            *room_name = s.room_name.clone();
+        }
+        if token.is_none() {
+            *token = s.token.clone();
+        }
+    }
+    Ok(())
 }
 
 fn open_db(cli: &Cli) -> Result<Hako> {
     let mut cfg = HakoConfig::default();
 
-    cfg.durability_mode = match cli.durability {
+    cfg.durability_mode = match cli.durability.unwrap_or(DurabilityArg::OnCommit) {
         DurabilityArg::Always => DurabilityMode::Always,
         DurabilityArg::Interval => DurabilityMode::Interval,
         DurabilityArg::Manual => DurabilityMode::Manual,
@@ -362,8 +541,8 @@ fn open_db(cli: &Cli) -> Result<Hako> {
     }
 
 
-    Hako::open(&cli.db, cfg)
-        .with_context(|| format!("failed to open db at {}", &cli.db))
+    Hako::open(cli_db(cli), cfg)
+        .with_context(|| format!("failed to open db at {}", cli_db(cli)))
         .map(|db| {
             // ponytail: open() returns while index recovery still runs, and
             // queries issued first silently plan FullCollection (cursor
@@ -1222,7 +1401,6 @@ fn execute_command(
     show_time: bool,   // New parameter
     show_count: bool,
 ) -> Result<()> {
-    // let start_time = Instant::now();
     match command {
         Commands::Collections => list_collections(db)?,
         Commands::CollectionLocal { collection, off } => {
@@ -1404,12 +1582,7 @@ fn execute_command(
             // Handled by the loop break
         }
         Commands::Serve { .. } => bail!("Server already running"),
-        // _ => bail!("Command not supported in this mode"),
     }
-
-    // if show_time {
-    //     eprintln!("Execution time: {:?}", start_time.elapsed());
-    // }
 
     Ok(())
 }
@@ -1422,20 +1595,18 @@ fn format_sync_status(status: SyncStatus) -> &'static str {
     }
 }
 
-fn run_server(
-    cli: &Cli,
-    port: Option<u16>,
-    node_id: &str,
-    key: &str,
-    discovery: DiscoveryModeArg,
-    bind_addr: Option<&str>,
-    server_url: Option<&str>,
-    room_name: Option<&str>,
-    token: &str,
-) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
-
-    rt.block_on(async move {
+async fn serve_async(cli: &Cli, p: ServeParams) -> Result<()> {
+    let ServeParams {
+        port,
+        node_id,
+        key,
+        discovery,
+        bind,
+        server,
+        room_name,
+        token,
+    } = p;
+    {
         let db = Arc::new(open_db(cli)?);
 
         // 1. Initialize LAN Net Sync (if --port provided)
@@ -1446,7 +1617,7 @@ fn run_server(
                 DiscoveryModeArg::Broadcast => DiscoveryMode::Broadcast,
                 DiscoveryModeArg::Both => DiscoveryMode::Both,
             };
-            let syncer = NetSyncer::new(db.clone(), node_id, key, vec!["app_state".to_string()])
+            let syncer = NetSyncer::new(db.clone(), &node_id, &key, vec!["app_state".to_string()])
                 .with_discovery(mode);
             syncer.start(p).await.map_err(|e| anyhow!(e.to_string()))?;
             Some(syncer)
@@ -1456,18 +1627,18 @@ fn run_server(
 
         // 2. Initialize Cloud Sync (if --bind or --server provided)
         #[cfg(feature = "cloud-sync")]
-        let cloud_syncer = if let Some(b) = bind_addr {
+        let cloud_syncer = if let Some(b) = bind {
             // Server mode is room-agnostic: it hosts any room. Clients pick the
             // room (and this server); the server stores each room under its own
             // storage prefix. Room name/key are not needed here.
-            let cs = CloudSync::server(db.clone(), node_id, token);
-            cs.start(b).await.map_err(|e| anyhow!(e.to_string()))?;
-            Some((cs, format!("Server ({})", b)))
-        } else if let Some(s) = server_url {
-            let room = room_name.unwrap_or("default");
-            let cs = CloudSync::client(db.clone(), node_id, room, key, token);
-            cs.start(s).await.map_err(|e| anyhow!(e.to_string()))?;
-            Some((cs, format!("Client -> {} (room: {})", s, room)))
+            let cs = CloudSync::server(db.clone(), &node_id, &token);
+            cs.start(&b).await.map_err(|e| anyhow!(e.to_string()))?;
+            Some((cs, format!("Server ({b})")))
+        } else if let Some(s) = server {
+            let room = room_name.unwrap_or("default".to_string());
+            let cs = CloudSync::client(db.clone(), &node_id, &room, &key, &token);
+            cs.start(&s).await.map_err(|e| anyhow!(e.to_string()))?;
+            Some((cs, format!("Client -> {s} (room: {room})")))
         } else {
             None
         };
@@ -1531,13 +1702,13 @@ fn run_server(
                             if let Err(e) = execute_command(
                                 &db,
                                 repl_cli.command,
-                                &cli.db,
-                                cli.durability,
+                                cli_db(cli),
+                                cli.durability.unwrap_or(DurabilityArg::OnCommit),
                                 net_ref,
                                 repl_cli.time || cli.time,
                                 repl_cli.count || cli.count,
                             ) {
-                                println!("❌ Error: {}", e);
+                                println!("Error: {e}");
                             }
                         }
                         Err(e) => println!("{}", e),
@@ -1551,17 +1722,30 @@ fn run_server(
             }
         }
 
-        // #[cfg(feature = "net-sync")]
         if let Some(net) = net_syncer {
             net.stop();
         }
 
-        // #[cfg(feature = "cloud-sync")]
         if let Some((cs, _)) = cloud_syncer {
             cs.stop();
         }
 
-        Ok(())
-    })
+        // Persist committed writes before the runtime goes away.
+        let _ = db.flush();
+    }
+    Ok(())
+}
+
+/// Foreground serve: opens the DB, starts sync, runs the REPL. Returns only
+/// after the loop breaks (exit/quit/Ctrl+C). The runtime is released with
+/// `shutdown_background` so exit never hangs (see below).
+fn run_server(cli: &Cli, p: ServeParams) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(serve_async(cli, p))?;
+    // Don't `drop(rt)` here: cloud accept loops only notice `stop()` on the
+    // next traffic, and an implicit drop would block until then — the old
+    // "press Ctrl+C twice" bug (the second press killed the hung process).
+    rt.shutdown_background();
+    Ok(())
 }
 

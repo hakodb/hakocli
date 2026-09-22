@@ -32,6 +32,42 @@ The binary lands at `target/release/hakocli`. The `hakodb` dependency
 comes from crates.io; sync modes wire through the `net-sync` /
 `cloud-sync` cargo features (both on by default).
 
+## Config file
+
+`--config <file>` loads options from TOML — handy for serve nodes with
+long flag lists. Precedence is always **CLI flag > config file >
+built-in default**, so a file can hold the stable base while one-off
+flags override it.
+
+```toml
+# hako.toml
+db = "./demo.db"
+durability = "on-commit"   # always | interval | manual | on-commit
+# encryption_key = "secret"
+# encrypted_cols = "users,tx"
+time = true
+count = false
+
+[serve]
+port = 7070
+node_id = "node-1"
+key = "room-key"
+discovery = "both"         # mdns | broadcast | both
+# bind = "0.0.0.0:8080"    # cloud server, or:
+# server = "ws://127.0.0.1:8080"  # cloud client
+# room_name = "game"
+token = "s3cret"
+```
+
+```sh
+hakocli --config hako.toml serve
+hakocli --config hako.toml --db ./other.db query users --limit 5
+```
+
+`node_id` has no default: pass `--node-id` or set `serve.node_id`,
+otherwise serve refuses to start (a mesh with duplicate ids is worse
+than an explicit error).
+
 ## User guide
 
 Two modes:
@@ -146,6 +182,10 @@ hako(node-1 | LAN:Online (Peers:2)) > query users --where active:eq:true --limit
 hako(node-1 | LAN:Online (Peers:2)) > peers
 hako(node-1 | LAN:Online (Peers:2)) > exit
 ```
+
+Exiting the REPL (`exit` / `quit` / EOF / Ctrl+C) flushes committed
+writes and releases the runtime without waiting for idle sync tasks,
+so one Ctrl+C is always enough.
 
 #### Serve flags
 
