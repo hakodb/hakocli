@@ -13,7 +13,7 @@ cloud-sync = ["hakodb/cloud-sync"]
 [dependencies]
 # Core from crates.io (publishable). Sync wires through the
 # net-sync/cloud-sync features below.
-hakodb = { version = "0.8.23" }
+hakodb = { version = "0.8.29" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 serde_json = "1.0"
