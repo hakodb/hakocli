@@ -145,6 +145,12 @@ hakocli --db ./demo.db collections
 hakocli --db ./demo.db stats
 hakocli --db ./demo.db compact
 
+# archive: move docs between collections, manage lazy groups
+hakocli --db ./demo.db relocate --id a,b users users_archive
+hakocli --db ./demo.db load users_archive
+hakocli --db ./demo.db unload users_archive
+hakocli --db ./demo.db unloaded
+
 # REST-like one-shot surface: METHOD PATH [--data JSON]
 hakocli --db ./demo.db rest GET users/alice
 hakocli --db ./demo.db rest PATCH users/alice --data '{"age":32}'
