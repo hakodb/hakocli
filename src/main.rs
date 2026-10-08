@@ -82,6 +82,22 @@ enum Commands {
     /// Vacuum a collection: purge tombstones (no sync traffic); next
     /// handshake pulls peer state. The restore half of a local reset.
     Vacuum { collection: String },
+    /// Move docs by id from one collection to another (same engine).
+    /// Refuses excluded (sync-withheld/local-only) sides; reports moved
+    /// vs missing ids instead of failing half-way.
+    Relocate {
+        src: String,
+        dst: String,
+        /// Repeated id: --id a --id b (or comma-separated in one flag)
+        #[arg(long = "id")]
+        ids: Vec<String>,
+    },
+    /// Load a lazy collection's snapshot into the index now (sync).
+    Load { collection: String },
+    /// Unload a lazy collection from the index (frees RAM; snapshot stays).
+    Unload { collection: String },
+    /// List lazy collections currently unloaded (not in the index).
+    Unloaded,
     /// Get one document by path: `<collection>/<doc_id>`
     Get {
         path: String,
@@ -1414,6 +1430,41 @@ fn execute_command(
         Commands::Vacuum { collection } => {
             let n = db.vacuum_collection(&collection)?;
             println!("OK: vacuumed {n} tombstones from {collection} (not synced)");
+        }
+        Commands::Relocate { src, dst, ids } => {
+            let flat: Vec<String> = ids
+                .iter()
+                .flat_map(|s| s.split(','))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let rep = db.relocate_docs(&src, &dst, &flat)?;
+            println!(
+                "OK: relocated {} docs {src} -> {dst} ({} missing)",
+                rep.moved.len(),
+                rep.missing.len()
+            );
+            for id in &rep.missing {
+                println!("  missing: {id}");
+            }
+        }
+        Commands::Load { collection } => {
+            db.load_collection(&collection)?;
+            println!("OK: {collection} loaded into the index");
+        }
+        Commands::Unload { collection } => {
+            db.unload_collection(&collection)?;
+            println!("OK: {collection} unloaded (snapshot retained)");
+        }
+        Commands::Unloaded => {
+            let cols = db.unloaded_lazy_collections();
+            if cols.is_empty() {
+                println!("OK: no unloaded lazy collections");
+            } else {
+                for c in cols {
+                    println!("{c}");
+                }
+            }
         }
         Commands::Get {
             path,

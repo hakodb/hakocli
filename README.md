@@ -11,6 +11,7 @@ and LAN/cloud sync management.
 | hakocli | hako core |
 |---|---|
 | 0.2.2 | `hakodb 0.8.23+` (crates.io) |
+| 0.2.4 | `hakodb 0.12.2` (relocate/load/unload/unloaded archive commands) |
 
 ## Install
 
