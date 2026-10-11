@@ -10,6 +10,7 @@ use hakodb::document::hako_doc::HakoDoc;
 use hakodb::document::value::Value;
 use hakodb::engine::{BatchMutation, Hako};
 use hakodb::index::composite::definition::SortDirection;
+use hakodb::index::vector::{decode_f32s, distance, Metric};
 use hakodb::query::filter::Operator;
 use hakodb::query::query::{AggregateOp, Query};
 use rustyline::error::ReadlineError;
@@ -235,6 +236,11 @@ enum Commands {
         #[command(subcommand)]
         command: IndexCommands,
     },
+    /// Vector (KNN) operations: index admin + similarity search
+    Vector {
+        #[command(subcommand)]
+        command: VectorCommands,
+    },
     /// Serializable transaction helper (single-doc set)
     TxSet {
         path: String,
@@ -324,6 +330,45 @@ enum IndexCommands {
     Inspect {
         collection: String,
         field: String,
+    }
+}
+
+#[derive(Subcommand, Debug)]
+enum VectorCommands {
+    /// Create a vector index over a binary LE-f32 field
+    Create {
+        collection: String,
+        field: String,
+        dim: u32,
+        /// Distance metric (default: cosine)
+        #[arg(long, value_enum, default_value_t = VectorMetricArg::Cosine)]
+        metric: VectorMetricArg,
+    },
+    /// KNN search: prints nearest-first [{id, score, doc}] as JSON
+    Search {
+        collection: String,
+        field: String,
+        /// Query vector as comma-separated floats, e.g. --query 1.0,0.5
+        #[arg(long)]
+        query: String,
+        /// Top-K (default: 10)
+        #[arg(long, default_value_t = 10)]
+        k: usize,
+    },
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum VectorMetricArg {
+    Cosine,
+    L2,
+}
+
+impl VectorMetricArg {
+    fn metric(self) -> Metric {
+        match self {
+            VectorMetricArg::Cosine => Metric::Cosine,
+            VectorMetricArg::L2 => Metric::L2,
+        }
     }
 }
 
@@ -1591,6 +1636,39 @@ fn execute_command(
                 for entry in entries {
                     println!("{}", entry);
                 }
+            }
+        },
+        Commands::Vector { command } => match command {
+            VectorCommands::Create { collection, field, dim, metric } => {
+                db.create_vector_index(&collection, &field, dim, metric.metric())?;                println!("OK: created vector index");
+            }
+            VectorCommands::Search { collection, field, query, k } => {
+                let q: Vec<f32> = query
+                    .split(',')
+                    .map(|s| s.trim().parse::<f32>())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| anyhow!("bad --query floats: {e}"))?;
+                // Exact per-hit scores recomputed from the stored document
+                // vector — twin of `hk_engine_find_near` (hakodb ffi.rs)
+                // and the FindNear arm (hakotauri gateway.rs). Same rule:
+                // promote to a core helper if a fourth consumer appears.
+                let metric = db.vector_metric(&collection, &field).unwrap_or(Metric::Cosine);
+                let rows = db.find_near(&collection, &field, &q, k)?;
+                let hits: Vec<JsonValue> = rows
+                    .iter()
+                    .map(|(id, doc)| {
+                        let score = match doc.get(&field) {
+                            Some(Value::Binary(b)) => decode_f32s(b)
+                                .ok()
+                                .filter(|v| v.len() == q.len())
+                                .map(|v| distance(metric, &q, &v))
+                                .unwrap_or(f64::INFINITY),
+                            _ => f64::INFINITY,
+                        };
+                        json!({"id": id, "score": score, "doc": doc_to_json(id, doc)})
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&hits)?);
             }
         },
         Commands::TxSet {

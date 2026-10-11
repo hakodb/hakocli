@@ -12,6 +12,8 @@ and LAN/cloud sync management.
 |---|---|
 | 0.2.2 | `hakodb 0.8.23+` (crates.io) |
 | 0.2.4 | `hakodb 0.12.2` (relocate/load/unload/unloaded archive commands) |
+| 0.2.5 | `hakodb 0.12.4` |
+| 0.2.6 | `hakodb 0.13+` (`vector create` + `vector search` KNN commands) |
 
 ## Install
 
@@ -144,12 +146,6 @@ hakocli --db ./demo.db watch users
 hakocli --db ./demo.db collections
 hakocli --db ./demo.db stats
 hakocli --db ./demo.db compact
-
-# archive: move docs between collections, manage lazy groups
-hakocli --db ./demo.db relocate --id a,b users users_archive
-hakocli --db ./demo.db load users_archive
-hakocli --db ./demo.db unload users_archive
-hakocli --db ./demo.db unloaded
 
 # REST-like one-shot surface: METHOD PATH [--data JSON]
 hakocli --db ./demo.db rest GET users/alice
