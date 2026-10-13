@@ -241,6 +241,11 @@ enum Commands {
         #[command(subcommand)]
         command: VectorCommands,
     },
+    /// Graph operations: backlink tracking + BFS traversal
+    Traverse {
+        #[command(subcommand)]
+        command: TraverseCommands,
+    },
     /// Serializable transaction helper (single-doc set)
     TxSet {
         path: String,
@@ -368,6 +373,49 @@ impl VectorMetricArg {
         match self {
             VectorMetricArg::Cosine => Metric::Cosine,
             VectorMetricArg::L2 => Metric::L2,
+        }
+    }
+}
+
+#[derive(Subcommand, Debug)]
+enum TraverseCommands {
+    /// Track inbound edges to a collection (reverse lookup + incoming BFS)
+    Create {
+        collection: String,
+    },
+    /// BFS walk from a doc: prints [{collection, id, depth, doc}] as JSON
+    Paths {
+        collection: String,
+        id: String,
+        /// Walk direction (default: outgoing)
+        #[arg(long, value_enum, default_value_t = TraverseDirectionArg::Outgoing)]
+        direction: TraverseDirectionArg,
+        /// Single edge field (default: any ref field)
+        #[arg(long)]
+        edge: Option<String>,
+        /// Max depth 1..=32 (default: 10)
+        #[arg(long, default_value_t = 10)]
+        depth: usize,
+        /// Top-K hits (default: 100)
+        #[arg(long, default_value_t = 100)]
+        k: usize,
+    },
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum TraverseDirectionArg {
+    Outgoing,
+    Incoming,
+    Both,
+}
+
+impl TraverseDirectionArg {
+    fn dir(self) -> hakodb::index::traverse::TraverseDir {
+        use hakodb::index::traverse::TraverseDir;
+        match self {
+            TraverseDirectionArg::Outgoing => TraverseDir::Outgoing,
+            TraverseDirectionArg::Incoming => TraverseDir::Incoming,
+            TraverseDirectionArg::Both => TraverseDir::Both,
         }
     }
 }
@@ -1667,6 +1715,26 @@ fn execute_command(
                         };
                         json!({"id": id, "score": score, "doc": doc_to_json(id, doc)})
                     })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&hits)?);
+            }
+        },
+        Commands::Traverse { command } => match command {
+            TraverseCommands::Create { collection } => {
+                db.create_traverse_index(&collection)?;
+                println!("OK: tracking inbound edges");
+            }
+            TraverseCommands::Paths { collection, id, direction, edge, depth, k } => {
+                let spec = hakodb::index::traverse::TraverseSpec {
+                    direction: direction.dir(),
+                    edge_field: edge.clone(),
+                    max_depth: depth,
+                    limit: k,
+                };
+                let hits: Vec<JsonValue> = db
+                    .find_paths(&collection, &id, &spec)?
+                    .iter()
+                    .map(|h| json!({"collection": h.collection, "id": h.id, "depth": h.depth, "doc": doc_to_json(&h.id, &h.doc)}))
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&hits)?);
             }

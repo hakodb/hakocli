@@ -14,6 +14,7 @@ and LAN/cloud sync management.
 | 0.2.4 | `hakodb 0.12.2` (relocate/load/unload/unloaded archive commands) |
 | 0.2.5 | `hakodb 0.12.4` |
 | 0.2.6 | `hakodb 0.13+` (`vector create` + `vector search` KNN commands) |
+| 0.2.7 | `hakodb 0.14+` (`traverse create` + `traverse paths` graph BFS commands) |
 
 ## Install
 
