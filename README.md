@@ -1,6 +1,6 @@
 # hakocli
 
-> Part of [**HakoDB**](https://github.com/hakodb/hakodb) — embedded Firestore-style document DB in Rust. The engine + C ABI live in `hakodb/hakodb`; this repo holds the CLI.
+> Part of [**HakoDB**](https://github.com/hakodb/hakodb) — embedded document DB with native vector search and multi-plane sync, written in Rust. The engine + C ABI live in `hakodb/hakodb`; this repo holds the CLI.
 
 Command-line manager for the HakoDB
 embedded document engine: document CRUD, queries, indexes, watch streams,
