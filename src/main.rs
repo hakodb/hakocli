@@ -383,6 +383,10 @@ enum TraverseCommands {
     Create {
         collection: String,
     },
+    /// Register an edge collection (tracks it + indexes _from/_to)
+    CreateEdge {
+        collection: String,
+    },
     /// BFS walk from a doc: prints [{collection, id, depth, doc}] as JSON
     Paths {
         collection: String,
@@ -399,6 +403,12 @@ enum TraverseCommands {
         /// Top-K hits (default: 100)
         #[arg(long, default_value_t = 100)]
         k: usize,
+        /// Edge collection (docs with _from/_to join the walk)
+        #[arg(long)]
+        via: Option<String>,
+        /// Numeric prop on edge docs for Dijkstra ordering
+        #[arg(long)]
+        weight: Option<String>,
     },
 }
 
@@ -1724,17 +1734,23 @@ fn execute_command(
                 db.create_traverse_index(&collection)?;
                 println!("OK: tracking inbound edges");
             }
-            TraverseCommands::Paths { collection, id, direction, edge, depth, k } => {
+            TraverseCommands::CreateEdge { collection } => {
+                db.create_edge_index(&collection)?;
+                println!("OK: edge collection registered");
+            }
+            TraverseCommands::Paths { collection, id, direction, edge, depth, k, via, weight } => {
                 let spec = hakodb::index::traverse::TraverseSpec {
                     direction: direction.dir(),
                     edge_field: edge.clone(),
                     max_depth: depth,
                     limit: k,
+                    via_edge: via.clone(),
+                    weight_field: weight.clone(),
                 };
                 let hits: Vec<JsonValue> = db
                     .find_paths(&collection, &id, &spec)?
                     .iter()
-                    .map(|h| json!({"collection": h.collection, "id": h.id, "depth": h.depth, "doc": doc_to_json(&h.id, &h.doc)}))
+                    .map(|h| json!({"collection": h.collection, "id": h.id, "depth": h.depth, "cost": h.cost, "doc": doc_to_json(&h.id, &h.doc)}))
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&hits)?);
             }
