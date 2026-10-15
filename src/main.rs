@@ -298,8 +298,7 @@ enum Commands {
         #[arg(long)]
         server: Option<String>,
 
-        /// Room name for Cloud Sync (used by the client to join a room).
-        /// The server stores room collections as `<room_name>_<collection>`.
+        /// Room name for Cloud Sync (client joins it; server serves it).
         #[arg(long)]
         room_name: Option<String>,
 
@@ -1841,12 +1840,12 @@ async fn serve_async(cli: &Cli, p: ServeParams) -> Result<()> {
         // 2. Initialize Cloud Sync (if --bind or --server provided)
         #[cfg(feature = "cloud-sync")]
         let cloud_syncer = if let Some(b) = bind {
-            // Server mode is room-agnostic: it hosts any room. Clients pick the
-            // room (and this server); the server stores each room under its own
-            // storage prefix. Room name/key are not needed here.
-            let cs = CloudSync::server(db.clone(), &node_id, &token);
+            // Single-room server: bound to --room-name/--key like a
+            // client (a room-agnostic hub no longer exists).
+            let room = room_name.clone().unwrap_or("default".to_string());
+            let cs = CloudSync::server(db.clone(), &node_id, &token, &room, &key);
             cs.start(&b).await.map_err(|e| anyhow!(e.to_string()))?;
-            Some((cs, format!("Server ({b})")))
+            Some((cs, format!("Server ({b}) (room: {room})")))
         } else if let Some(s) = server {
             let room = room_name.unwrap_or("default".to_string());
             let cs = CloudSync::client(db.clone(), &node_id, &room, &key, &token);
