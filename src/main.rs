@@ -153,7 +153,25 @@ enum Commands {
         /// Local-only: mark so no sync tailer or handshake ever transmits it
         #[arg(long)]
         local: bool,
+        /// Hard delete: skip the soft-delete retention/restore window
+        #[arg(long)]
+        force: bool,
     },
+    /// Restore a soft-deleted document: `<collection>/<doc_id>` (fresh
+    /// version; the retention record is consumed)
+    Restore { path: String },
+    /// List restoreable soft-deleted docs (all collections or one)
+    RestoreAvailable {
+        /// Restrict to one collection
+        collection: Option<String>,
+    },
+    /// List soft-deleted docs due for the sweeper purge (all or one)
+    DeleteQueue {
+        /// Restrict to one collection
+        collection: Option<String>,
+    },
+    /// Run one sweeper pass now; prints the purged record count
+    Sweep,
     /// Query documents in a collection
     Query {
         collection: String,
@@ -195,7 +213,7 @@ enum Commands {
         /// resolve later with `get`. List views over image docs stay tiny.
         #[arg(long)]
         defer_blobs: bool,
-        /// Repeated aggregate: count | sum:`<field>` | avg:`<field>`
+        /// Repeated aggregate: count | sum:`<field>` | avg:`<field>` | min:`<field>` | max:`<field>`
         #[arg(long = "aggregate")]
         aggregates: Vec<String>,
         /// Write JSON output to file path
@@ -217,7 +235,7 @@ enum Commands {
         #[arg(long)]
         fromfile: Option<String>,
     },
-    /// Aggregations: count | sum | avg
+    /// Aggregations: count | sum | avg | min | max
     Aggregate {
         collection: String,
         #[arg(value_enum)]
@@ -442,6 +460,8 @@ enum AggregateKindArg {
     Count,
     Sum,
     Avg,
+    Min,
+    Max,
 }
 
 /// TOML config file shape (`--config`). Every field is optional: an absent
@@ -866,7 +886,7 @@ fn set_doc(db: &Hako, path: &str, data: &str, merge: bool, is_batch: bool, show_
     Ok(())
 }
 
-fn delete_doc(db: &Hako, path: &str, is_batch: bool, data: Option<&str>, show_time: bool, local_only: bool) -> Result<()> {
+fn delete_doc(db: &Hako, path: &str, is_batch: bool, data: Option<&str>, show_time: bool, local_only: bool, force: bool) -> Result<()> {
     let start_time = Instant::now();
     if is_batch {
         let collection = path;
@@ -881,29 +901,53 @@ fn delete_doc(db: &Hako, path: &str, is_batch: bool, data: Option<&str>, show_ti
         let count = if local_only {
             db.delete_ids_local(collection, &id_list)?
         } else {
-            let mutations: Vec<_> = id_list.iter()
-                .map(|id| hakodb::engine::BatchMutation::Delete {
-                    collection: collection.to_string(),
-                    doc_id: id.clone(),
+            // Soft by default; `BatchMutation::Delete` is the legacy hard
+            // variant the engine keeps for force deletes and sync paths.
+            let mutations: Vec<_> = id_list
+                .iter()
+                .map(|id| if force {
+                    hakodb::engine::BatchMutation::Delete {
+                        collection: collection.to_string(),
+                        doc_id: id.clone(),
+                    }
+                } else {
+                    hakodb::engine::BatchMutation::SoftDelete {
+                        collection: collection.to_string(),
+                        doc_id: id.clone(),
+                    }
                 })
                 .collect();
             let count = mutations.len();
             db.write_batch(mutations)?;
             count
         };
-        println!("OK: deleted {} documents from {}", count, collection);
+        let mode = if force { " (hard)" } else { " (soft; restoreable, see restore-available)" };
+        println!("OK: deleted {} documents from {}{}", count, collection, mode);
     } else {
         let (collection, doc_id) = split_doc_path(path)?;
         if local_only {
             let id = db.delete_local(collection, doc_id)?;
             println!("OK: locally deleted {collection}/{id} (not synced)");
+        } else if force {
+            let id = db.delete_force(collection, doc_id)?;
+            println!("OK: deleted {collection}/{id} (hard)");
         } else {
             let id = db.delete(collection, doc_id)?;
-            println!("OK: deleted {collection}/{id}");
+            println!("OK: deleted {collection}/{id} (soft; restoreable, see restore-available)");
         }
     }
     if show_time {
         eprintln!("Execution time: {:?}", start_time.elapsed());
+    }
+    Ok(())
+}
+
+fn restore_doc(db: &Hako, path: &str) -> Result<()> {
+    let (collection, doc_id) = split_doc_path(path)?;
+    db.restore(collection, doc_id)?;
+    match db.get(collection, doc_id)? {
+        Some(doc) => println!("{}", serde_json::to_string_pretty(&doc_to_json(doc_id, &doc))?),
+        None => bail!("restore: {collection}/{doc_id} missing after restore"),
     }
     Ok(())
 }
@@ -1058,6 +1102,8 @@ fn run_query(
                 AggregateOp::Count => agg_query.aggregate(AggregateOp::Count),
                 AggregateOp::Sum(field) => agg_query.aggregate(AggregateOp::Sum(field)),
                 AggregateOp::Avg(field) => agg_query.aggregate(AggregateOp::Avg(field)),
+                AggregateOp::Min(field) => agg_query.aggregate(AggregateOp::Min(field)),
+                AggregateOp::Max(field) => agg_query.aggregate(AggregateOp::Max(field)),
             };
             let out = db.execute_aggregation(agg_query)?;
             agg_results.push(serde_json::to_value(out)?);
@@ -1127,6 +1173,14 @@ fn run_aggregate(
             let f = field.ok_or_else(|| anyhow!("--field required for avg"))?;
             q.aggregate(AggregateOp::Avg(f.to_string()))
         },
+        AggregateKindArg::Min => {
+            let f = field.ok_or_else(|| anyhow!("--field required for min"))?;
+            q.aggregate(AggregateOp::Min(f.to_string()))
+        },
+        AggregateKindArg::Max => {
+            let f = field.ok_or_else(|| anyhow!("--field required for max"))?;
+            q.aggregate(AggregateOp::Max(f.to_string()))
+        },
     };
 
     // The core now handles the O(N) scan automatically if no index matches
@@ -1146,7 +1200,7 @@ fn parse_aggregate_spec(input: &str) -> Result<AggregateOp> {
     }
 
     let (kind, field) = raw.split_once(':').ok_or_else(|| {
-        anyhow!("invalid aggregate '{input}', expected count or sum:<field>/avg:<field>")
+        anyhow!("invalid aggregate '{input}', expected count or sum/avg/min/max:<field>")
     })?;
     let field = field.trim();
     if field.is_empty() {
@@ -1155,6 +1209,8 @@ fn parse_aggregate_spec(input: &str) -> Result<AggregateOp> {
     match kind.to_ascii_lowercase().as_str() {
         "sum" => Ok(AggregateOp::Sum(field.to_string())),
         "avg" => Ok(AggregateOp::Avg(field.to_string())),
+        "min" => Ok(AggregateOp::Min(field.to_string())),
+        "max" => Ok(AggregateOp::Max(field.to_string())),
         _ => bail!("unsupported aggregate kind in '{input}'"),
     }
 }
@@ -1313,7 +1369,7 @@ fn run_rest(
             false,
             false
         ),
-        "DELETE" => delete_doc(db, path, false, Some(" "), false, false),
+        "DELETE" => delete_doc(db, path, false, Some(" "), false, false, false),
         other => bail!("unsupported REST method: {other}"),
     }
 }
@@ -1600,9 +1656,27 @@ fn execute_command(
             let payload = read_payload_input(data.as_deref(), fromfile.as_deref())?;
             set_doc(db, &path, &payload, true, batch.unwrap_or(false), show_time)?
         }
-        Commands::Delete { path, batch, data, local } => {
-            delete_doc(db, &path, batch.unwrap_or(false), data.as_deref(), show_time, local)?
+        Commands::Delete { path, batch, data, local, force } => {
+            delete_doc(db, &path, batch.unwrap_or(false), data.as_deref(), show_time, local, force)?
         }
+        Commands::Restore { path } => restore_doc(db, &path)?,
+        Commands::RestoreAvailable { collection } => {
+            let rows = db.restore_available(collection.as_deref())?;
+            if rows.is_empty() {
+                println!("no restoreable documents");
+            } else {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            }
+        }
+        Commands::DeleteQueue { collection } => {
+            let rows = db.delete_queue(collection.as_deref())?;
+            if rows.is_empty() {
+                println!("nothing due for sweep");
+            } else {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            }
+        }
+        Commands::Sweep => println!("purged {} retention records", db.sweep_now()?),
         Commands::Query {
             collection,
             filters,
@@ -1745,6 +1819,11 @@ fn execute_command(
                     limit: k,
                     via_edge: via.clone(),
                     weight_field: weight.clone(),
+                    node_match: None,
+                    edge_type: None,
+                    edge_match: None,
+                    include_path: false,
+                    include_via: false,
                 };
                 let hits: Vec<JsonValue> = db
                     .find_paths(&collection, &id, &spec)?
