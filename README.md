@@ -126,10 +126,19 @@ hakocli --db ./demo.db query users --fts description:seeded
 hakocli --db ./demo.db query users --where description:matchPrefix:seed
 hakocli --db ./demo.db query users --select name,age
 
-# aggregates
+# aggregates (count, sum, avg, min, max)
 hakocli --db ./demo.db aggregate users count
 hakocli --db ./demo.db aggregate users sum --field age --where active:eq:true
 hakocli --db ./demo.db query users --aggregate count --aggregate avg:age
+hakocli --db ./demo.db query users --aggregate min:age --aggregate max:age
+
+# soft delete, restore, and the retention queue
+hakocli --db ./demo.db delete users/alice          # soft (restoreable until swept)
+hakocli --db ./demo.db delete users/alice --force  # hard (no restore)
+hakocli --db ./demo.db restore-available users     # list restoreable docs
+hakocli --db ./demo.db restore users/alice         # undo the delete
+hakocli --db ./demo.db delete-queue                # what the next sweep will purge
+hakocli --db ./demo.db sweep                       # purge expired records now
 
 # mass update / mass delete from a query
 hakocli --db ./demo.db query users --where status:eq:trial --set --data '{"tier":"pro"}'
