@@ -1592,7 +1592,46 @@ fn strip_wrapping_quotes(input: &str) -> &str {
 }
 
 fn json_to_fire(v: JsonValue) -> Result<Value> {
-    Value::from_json(v).map_err(|e| anyhow!(e))
+    convert_f32_markers(Value::from_json(v).map_err(|e| anyhow!(e))?)
+}
+
+/// `{"__f32__":[...]}` -> LE-f32 `Value::Binary`: the carrier the KNN scan
+/// reads. JSON has no bytes, so this is the only way CLI users can ingest
+/// vector fields (set/update/batch/tx all route through here).
+fn convert_f32_markers(v: Value) -> Result<Value> {
+    match v {
+        Value::Array(items) => Ok(Value::Array(
+            items
+                .into_iter()
+                .map(convert_f32_markers)
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        Value::Map(map) => {
+            if let Some((_, val)) = map.iter().find(|(k, _)| &**k == "__f32__") {
+                if map.len() == 1 {
+                    let nums = match val {
+                        Value::Array(items) => items,
+                        _ => bail!("__f32__ requires an array of numbers"),
+                    };
+                    let f32s = nums
+                        .iter()
+                        .map(|n| match n {
+                            Value::Int(i) => Ok(*i as f32),
+                            Value::Float(f) => Ok(*f as f32),
+                            other => bail!("__f32__ requires numbers, got {other:?}"),
+                        })
+                        .collect::<Result<Vec<f32>, _>>()?;
+                    return Ok(Value::Binary(encode_f32s(&f32s)));
+                }
+            }
+            let mut out = Vec::with_capacity(map.len());
+            for (k, val) in map {
+                out.push((k, convert_f32_markers(val)?));
+            }
+            Ok(Value::Map(out))
+        }
+        other => Ok(other),
+    }
 }
 
 fn fire_to_json(v: &Value) -> JsonValue {
@@ -2158,6 +2197,26 @@ mod op_parse_tests {
         let (field, v) = parse_kv_spec("meta:{\"kind\":\"dep\"}").expect("parses json");
         assert_eq!(field, "meta");
         assert!(matches!(v, Value::Map(_)));
+    }
+
+    #[test]
+    fn f32_marker_becomes_vector_binary() {
+        let v = json_to_fire(serde_json::json!({ "vec": { "__f32__": [1, 2.5, -0.25] } }))
+            .expect("parses");
+        match v {
+            Value::Map(m) => match &m[0].1 {
+                Value::Binary(b) => {
+                    assert_eq!(decode_f32s(b).expect("decodes"), vec![1.0, 2.5, -0.25])
+                }
+                other => panic!("expected binary, got {other:?}"),
+            },
+            other => panic!("expected map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn f32_marker_rejects_non_numbers() {
+        assert!(json_to_fire(serde_json::json!({ "__f32__": [1, "x"] })).is_err());
     }
 }
 
