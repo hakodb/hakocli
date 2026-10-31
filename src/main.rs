@@ -10,7 +10,7 @@ use hakodb::document::hako_doc::HakoDoc;
 use hakodb::document::value::Value;
 use hakodb::engine::{BatchMutation, Hako};
 use hakodb::index::composite::definition::SortDirection;
-use hakodb::index::vector::{decode_f32s, distance, Metric};
+use hakodb::index::vector::{decode_f32s, distance, encode_f32s, Metric};
 use hakodb::query::filter::Operator;
 use hakodb::query::query::{AggregateOp, Query};
 use rustyline::error::ReadlineError;
@@ -377,6 +377,11 @@ enum VectorCommands {
         #[arg(long, default_value_t = 10)]
         k: usize,
     },
+    /// Drop a vector index over a field
+    Drop {
+        collection: String,
+        field: String,
+    },
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -404,7 +409,16 @@ enum TraverseCommands {
     CreateEdge {
         collection: String,
     },
-    /// BFS walk from a doc: prints [{collection, id, depth, doc}] as JSON
+    /// Drop a collection's backlink (traverse) index
+    Drop {
+        collection: String,
+    },
+    /// Drop an edge collection registration
+    DropEdge {
+        collection: String,
+    },
+    /// BFS walk (or with --simple: simple-path enumeration) from a doc
+    /// from a doc: prints [{collection, id, depth, cost, doc}] as JSON
     Paths {
         collection: String,
         id: String,
@@ -426,6 +440,27 @@ enum TraverseCommands {
         /// Numeric prop on edge docs for Dijkstra ordering
         #[arg(long)]
         weight: Option<String>,
+        /// Enumerate simple paths (no repeated nodes) in cost order
+        /// instead of the BFS walk
+        #[arg(long)]
+        simple: bool,
+        /// Decorate hits with the full discovery path
+        #[arg(long)]
+        include_path: bool,
+        /// Decorate hits with per-hop edge docs (via chains)
+        #[arg(long)]
+        include_via: bool,
+        /// Prune the walk to nodes whose field equals this value
+        /// (field:json, e.g. language:rust)
+        #[arg(long)]
+        node_match: Option<String>,
+        /// Route edge-collection hops: type field must equal this
+        /// (field:json, e.g. type:follows)
+        #[arg(long)]
+        edge_type: Option<String>,
+        /// Filter edge-collection hops on any property (field:json)
+        #[arg(long)]
+        edge_match: Option<String>,
     },
 }
 
@@ -1409,10 +1444,34 @@ fn parse_filter(input: &str) -> Result<ParsedFilter> {
             }
             Value::Array(items)
         }
+    } else if op == Operator::Near {
+        // KNN marker: the query vector rides as LE-f32 Binary; k rides --limit.
+        let val = parse_literal_for_operator(&op, parts[2].trim())?;
+        let v: Vec<f32> = match val {
+            Value::Array(items) => items
+                .iter()
+                .map(|v| match v {
+                    Value::Int(i) => Ok(*i as f32),
+                    Value::Float(f) => Ok(*f as f32),
+                    other => bail!("near elements must be numbers, got {other:?}"),
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => bail!("near requires a JSON array of numbers: field:near:[1.0,2.5]"),
+        };
+        Value::Binary(encode_f32s(&v))
     } else {
         parse_literal_for_operator(&op, parts[2].trim())?
     };
     Ok(ParsedFilter { field, op, value })
+}
+
+/// field:json (or field:scalar) -> (field, Value) for traverse hop filters.
+fn parse_kv_spec(input: &str) -> Result<(String, Value)> {
+    let (field, rest) = input
+        .split_once(':')
+        .context("expected field:value (e.g. type:follows)")?;
+    let value = parse_literal(rest.trim())?;
+    Ok((field.trim().to_string(), value))
 }
 
 fn parse_order(input: &str) -> Result<(&str, bool)> {
@@ -1445,6 +1504,8 @@ fn parse_operator(input: &str) -> Result<Operator> {
         "notin" | "not_in" => Ok(Operator::NotIn),
         "arraycontains" | "array_contains" => Ok(Operator::ArrayContains),
         "arraycontainsany" | "array_contains_any" => Ok(Operator::ArrayContainsAny),
+        "near" => Ok(Operator::Near),
+        "traverse" => Ok(Operator::Traverse),
         other => bail!("unsupported operator: {other}"),
     }
 }
@@ -1801,6 +1862,10 @@ fn execute_command(
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&hits)?);
             }
+            VectorCommands::Drop { collection, field } => {
+                db.drop_vector_index(&collection, &field)?;
+                println!("OK: dropped vector index");
+            }
         },
         Commands::Traverse { command } => match command {
             TraverseCommands::Create { collection } => {
@@ -1811,7 +1876,15 @@ fn execute_command(
                 db.create_edge_index(&collection)?;
                 println!("OK: edge collection registered");
             }
-            TraverseCommands::Paths { collection, id, direction, edge, depth, k, via, weight } => {
+            TraverseCommands::Drop { collection } => {
+                db.drop_traverse_index(&collection)?;
+                println!("OK: dropped traverse index");
+            }
+            TraverseCommands::DropEdge { collection } => {
+                db.drop_edge_index(&collection)?;
+                println!("OK: dropped edge index");
+            }
+            TraverseCommands::Paths { collection, id, direction, edge, depth, k, via, weight, simple, include_path, include_via, node_match, edge_type, edge_match } => {
                 let spec = hakodb::index::traverse::TraverseSpec {
                     direction: direction.dir(),
                     edge_field: edge.clone(),
@@ -1819,16 +1892,29 @@ fn execute_command(
                     limit: k,
                     via_edge: via.clone(),
                     weight_field: weight.clone(),
-                    node_match: None,
-                    edge_type: None,
-                    edge_match: None,
-                    include_path: false,
-                    include_via: false,
+                    node_match: node_match.as_deref().map(parse_kv_spec).transpose()?,
+                    edge_type: edge_type.as_deref().map(parse_kv_spec).transpose()?,
+                    edge_match: edge_match.as_deref().map(parse_kv_spec).transpose()?,
+                    include_path,
+                    include_via,
                 };
-                let hits: Vec<JsonValue> = db
-                    .find_paths(&collection, &id, &spec)?
+                let rows = if simple {
+                    db.find_simple_paths(&collection, &id, &spec)?
+                } else {
+                    db.find_paths(&collection, &id, &spec)?
+                };
+                let hits: Vec<JsonValue> = rows
                     .iter()
-                    .map(|h| json!({"collection": h.collection, "id": h.id, "depth": h.depth, "cost": h.cost, "doc": doc_to_json(&h.id, &h.doc)}))
+                    .map(|h| {
+                        let mut hit = json!({"collection": h.collection, "id": h.id, "depth": h.depth, "cost": h.cost, "doc": doc_to_json(&h.id, &h.doc)});
+                        if include_path {
+                            hit["path"] = json!(h.path.iter().map(|(c, i)| format!("{c}/{i}")).collect::<Vec<_>>());
+                        }
+                        if include_via {
+                            hit["via"] = json!(h.via);
+                        }
+                        hit
+                    })
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&hits)?);
             }
@@ -2038,5 +2124,40 @@ fn run_server(cli: &Cli, p: ServeParams) -> Result<()> {
     // "press Ctrl+C twice" bug (the second press killed the hung process).
     rt.shutdown_background();
     Ok(())
+}
+
+#[cfg(test)]
+mod op_parse_tests {
+    use super::*;
+
+    #[test]
+    fn near_filter_encodes_le_f32() {
+        let f = parse_filter("emb:near:[1.5,2.0,-0.25]").expect("parses");
+        assert_eq!(f.field, "emb");
+        assert!(matches!(f.op, Operator::Near));
+        match f.value {
+            Value::Binary(b) => assert_eq!(decode_f32s(&b).expect("decodes"), vec![1.5, 2.0, -0.25]),
+            other => panic!("expected binary marker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn traverse_filter_carries_map_marker() {
+        let f = parse_filter(r#"users:traverse:{"id":"alice","dir":2,"depth":3,"edge":"rels"}"#)
+            .expect("parses");
+        assert_eq!(f.field, "users");
+        assert!(matches!(f.op, Operator::Traverse));
+        assert!(matches!(f.value, Value::Map(_)));
+    }
+
+    #[test]
+    fn kv_spec_parsing() {
+        let (field, v) = parse_kv_spec("type:follows").expect("parses");
+        assert_eq!(field, "type");
+        assert!(matches!(v, Value::String(ref s) if s == "follows"));
+        let (field, v) = parse_kv_spec("meta:{\"kind\":\"dep\"}").expect("parses json");
+        assert_eq!(field, "meta");
+        assert!(matches!(v, Value::Map(_)));
+    }
 }
 
