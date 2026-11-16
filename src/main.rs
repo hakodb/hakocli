@@ -462,6 +462,72 @@ enum TraverseCommands {
         #[arg(long)]
         edge_match: Option<String>,
     },
+    /// Personalized PageRank over the ref graph; prints
+    /// [{node, score}] score desc. Empty seeds = classic PageRank.
+    Pagerank {
+        collection: String,
+        /// Seeds as "col/id" (empty = classic PageRank)
+        #[arg(long)]
+        seeds: Vec<String>,
+        #[arg(long, value_enum, default_value_t = TraverseDirectionArg::Outgoing)]
+        direction: TraverseDirectionArg,
+        /// Single edge field (default: any ref field)
+        #[arg(long)]
+        edge: Option<String>,
+        /// Edge collection (docs with _from/_to join the walk)
+        #[arg(long)]
+        via: Option<String>,
+        /// Prune the graph's node set (field:json, e.g. language:rust)
+        #[arg(long)]
+        node_match: Option<String>,
+        /// Damping in (0,1); 0 = engine default 0.85
+        #[arg(long, default_value_t = 0.0)]
+        damping: f64,
+        /// Top rows (0 = all)
+        #[arg(long, default_value_t = 0)]
+        top: usize,
+    },
+    /// Seed-scoped N-hop subgraph; prints {nodes, edges}
+    Subgraph {
+        collection: String,
+        id: String,
+        /// Max depth 1..=32 (default: 10)
+        #[arg(long, default_value_t = 10)]
+        depth: usize,
+        #[arg(long, value_enum, default_value_t = TraverseDirectionArg::Outgoing)]
+        direction: TraverseDirectionArg,
+        /// Single edge field (default: any ref field)
+        #[arg(long)]
+        edge: Option<String>,
+        /// Edge collection (docs with _from/_to join the walk)
+        #[arg(long)]
+        via: Option<String>,
+        /// Prune the graph's node set (field:json, e.g. language:rust)
+        #[arg(long)]
+        node_match: Option<String>,
+    },
+    /// Hybrid retrieval: FTS + KNN fused with RRF; prints
+    /// [{id, score, doc}] fused score desc
+    Hybrid {
+        collection: String,
+        /// FTS (sparse) side: indexed text field
+        #[arg(long)]
+        text_field: String,
+        #[arg(long)]
+        text_query: String,
+        /// KNN (dense) side: indexed binary f32 field
+        #[arg(long)]
+        vec_field: String,
+        /// Query vector as a JSON array, e.g. [1.0,0.0]
+        #[arg(long)]
+        query: String,
+        /// Top-K rows (default: 10)
+        #[arg(long, default_value_t = 10)]
+        k: usize,
+        /// RRF constant (0 = engine default 60)
+        #[arg(long, default_value_t = 0)]
+        rrf_k: usize,
+    },
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -1956,6 +2022,63 @@ fn execute_command(
                     })
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&hits)?);
+            }
+            TraverseCommands::Pagerank { collection, seeds, direction, edge, via, node_match, damping, top } => {
+                let spec = hakodb::index::traverse::TraverseSpec {
+                    direction: direction.dir(),
+                    edge_field: edge.clone(),
+                    max_depth: 10,
+                    limit: 100,
+                    via_edge: via.clone(),
+                    weight_field: None,
+                    node_match: node_match.as_deref().map(parse_kv_spec).transpose()?,
+                    edge_type: None,
+                    edge_match: None,
+                    include_path: false,
+                    include_via: false,
+                };
+                let seed_nodes: Vec<(String, String)> = seeds
+                    .iter()
+                    .filter_map(|s| s.split_once('/').map(|(c, i)| (c.to_string(), i.to_string())))
+                    .collect();
+                // 0 rides the engine default, mirroring the FFI contract.
+                let damping = if damping == 0.0 { 0.85 } else { damping };
+                let rows = db.graph_pagerank(&collection, &seed_nodes, &spec, damping, top)?;
+                let out: Vec<JsonValue> = rows
+                    .into_iter()
+                    .map(|((c, i), score)| json!({"node": format!("{c}/{i}"), "score": score}))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            }
+            TraverseCommands::Subgraph { collection, id, depth, direction, edge, via, node_match } => {
+                let spec = hakodb::index::traverse::TraverseSpec {
+                    direction: direction.dir(),
+                    edge_field: edge.clone(),
+                    max_depth: depth,
+                    limit: 100,
+                    via_edge: via.clone(),
+                    weight_field: None,
+                    node_match: node_match.as_deref().map(parse_kv_spec).transpose()?,
+                    edge_type: None,
+                    edge_match: None,
+                    include_path: false,
+                    include_via: false,
+                };
+                println!("{}", db.subgraph_json(&collection, &id, &spec)?);
+            }
+            TraverseCommands::Hybrid { collection, text_field, text_query, vec_field, query, k, rrf_k } => {
+                let vec: Vec<f32> = serde_json::from_str::<Vec<f64>>(&query)?
+                    .into_iter()
+                    .map(|f| f as f32)
+                    .collect();
+                // 0 rides the engine default, mirroring the FFI contract.
+                let rrf_k = if rrf_k == 0 { 60 } else { rrf_k };
+                let rows = db.hybrid_search(&collection, &text_field, &text_query, &vec_field, &vec, k, rrf_k)?;
+                let out: Vec<JsonValue> = rows
+                    .iter()
+                    .map(|(id, score, doc)| json!({"id": id, "score": score, "doc": doc_to_json(id, doc)}))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&out)?);
             }
         },
         Commands::TxSet {
