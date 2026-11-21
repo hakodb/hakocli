@@ -1220,7 +1220,7 @@ fn run_query(
     // --- Standard Data Retrieval ---
     if let Some(select_str) = select {
         let fields: Vec<String> = select_str.split(',').map(|s| s.trim().to_string()).collect();
-        let rows = db.query_projected_zero_copy(q, &fields)?;
+        let rows = db.query_projected(q, &fields)?;
         let elapsed = start_time.elapsed();
         let cnt = rows.len();
         let json_rows: Vec<JsonValue> = rows.into_iter()
