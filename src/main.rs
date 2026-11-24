@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{Read, Write};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -814,12 +814,18 @@ fn read_payload_input(data: Option<&str>, fromfile: Option<&str>) -> Result<Stri
 }
 
 fn emit_json(value: &JsonValue, output: Option<&str>) -> Result<()> {
-    let rendered = serde_json::to_string_pretty(value)?;
+    // Stream pretty JSON instead of building one full String first. The
+    // emitted bytes are identical to `to_string_pretty` + `println!`.
     if let Some(path) = output {
-        std::fs::write(path, rendered)
+        let mut file = std::fs::File::create(path)
+            .with_context(|| format!("failed to create output file: {path}"))?;
+        serde_json::to_writer_pretty(&mut file, value)
             .with_context(|| format!("failed to write output file: {path}"))?;
     } else {
-        println!("{rendered}");
+        let stdout = std::io::stdout();
+        let mut out = stdout.lock();
+        serde_json::to_writer_pretty(&mut out, value)?;
+        writeln!(out)?;
     }
     Ok(())
 }
@@ -2366,6 +2372,20 @@ mod op_parse_tests {
         assert_eq!(aggregate_result_key(&AggregateOp::Avg("age".into())), "avg_age");
         assert_eq!(aggregate_result_key(&AggregateOp::Min("age".into())), "min_age");
         assert_eq!(aggregate_result_key(&AggregateOp::Max("age".into())), "max_age");
+    }
+
+    #[test]
+    fn emit_json_file_bytes_are_unchanged() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("hako-cli-emit-{nanos}.json"));
+        let value = json!({ "b": 2, "a": [1, 3] });
+        emit_json(&value, Some(path.to_str().unwrap())).expect("emit");
+        let got = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(got, serde_json::to_string_pretty(&value).expect("pretty"));
+        let _ = std::fs::remove_file(path);
     }
 }
 
