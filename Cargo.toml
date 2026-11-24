@@ -1,6 +1,6 @@
 [package]
 name = "hakocli"
-version = "0.4.11"
+version = "0.4.12"
 edition = "2021"
 description = "Command-line manager for the HakoDB embedded document engine"
 license = "MIT"
