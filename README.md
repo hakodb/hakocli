@@ -6,25 +6,25 @@ Command-line manager for the HakoDB
 embedded document engine: document CRUD, queries, indexes, watch streams,
 and LAN/cloud sync management.
 
-## Compatibility
+## Dependency policy
 
-| hakocli | hako core |
-|---|---|
-| 0.2.2 | `hakodb 0.8.23+` (crates.io) |
-| 0.2.4 | `hakodb 0.12.2` (relocate/load/unload/unloaded archive commands) |
-| 0.2.5 | `hakodb 0.12.4` |
-| 0.2.6 | `hakodb 0.13+` (`vector create` + `vector search` KNN commands) |
-| 0.2.7 | `hakodb 0.14+` (`traverse create` + `traverse paths` graph BFS commands) |
-| 0.2.8 | `hakodb 0.15+` (Phase B: `traverse create-edge` + `--via`/`--weight` Dijkstra) |
+The CLI declares a compatible core dependency in its manifest and is built
+against that release. The C ABI is append-only: existing symbols keep working
+across compatible updates, while newly added symbols need a runtime that
+exports them. Sync transports are enabled by default through the mesh and
+cloud feature flags; disable them only for a minimal local build.
 
 ## Install
 
 ```sh
-# from source
-cargo install --path .
+# latest published build
+cargo install hakocli
 
-# or straight from GitHub (pre-crates.io publish)
+# latest source
 cargo install --git https://github.com/hakodb/hakocli
+
+# from a local checkout
+cargo install --path .
 ```
 
 ## Build
@@ -157,13 +157,37 @@ hakocli --db ./demo.db watch users
 hakocli --db ./demo.db collections
 hakocli --db ./demo.db stats
 hakocli --db ./demo.db compact
+hakocli --db ./demo.db index keys users
+hakocli --db ./demo.db index inspect users age
+
+# sync-scoped collection maintenance
+hakocli --db ./demo.db collection-local users       # never sync this collection
+hakocli --db ./demo.db collection-local users --off  # rejoin sync
+hakocli --db ./demo.db vacuum users                  # purge tombstones locally
+hakocli --db ./demo.db load users                    # load lazy snapshot into RAM
+hakocli --db ./demo.db unload users                  # drop from RAM, keep snapshot
+hakocli --db ./demo.db unloaded
+hakocli --db ./demo.db relocate users archive --id alice --id bob
+
+# vector index and KNN search (field holds binary little-endian f32)
+hakocli --db ./demo.db vector create items emb 3 --metric cosine
+hakocli --db ./demo.db vector search items emb --query 1.0,0.5,0.25 --k 5
+hakocli --db ./demo.db vector drop items emb
+
+# graph: backlink tracking, edge registration, and walks
+hakocli --db ./demo.db traverse create users
+hakocli --db ./demo.db traverse create-edge follows
+hakocli --db ./demo.db traverse paths users alice --direction incoming --depth 3
+hakocli --db ./demo.db traverse paths users alice --via follows --weight cost --simple
+hakocli --db ./demo.db traverse drop users
+hakocli --db ./demo.db traverse drop-edge follows
 
 # REST-like one-shot surface: METHOD PATH [--data JSON]
 hakocli --db ./demo.db rest GET users/alice
 hakocli --db ./demo.db rest PATCH users/alice --data '{"age":32}'
 ```
 
-Query filter syntax is `field:op:value` where `op` is one of `eq, ne, gt, gte, lt, lte, in, notIn, match, matchPrefix, contains, startsWith, arrayContains, arrayContainsAny`. Array values use JSON, e.g. `tags:in:["a","b"]`. Ordering uses `field:asc` / `field:desc`. `match` runs a full-text (inverted-index) word search; `matchPrefix` is autocomplete-style prefix search over the same index (e.g. `"indom"` matches `"indomie"`).
+Query filter syntax is `field:op:value` where `op` is one of `eq, ne, gt, gte, lt, lte, in, notIn, match, matchPrefix, contains, startsWith, arrayContains, arrayContainsAny`. Array values use JSON, e.g. `tags:in:["a","b"]`. `--and` is an alias for repeated `--where`; `--or` adds disjunctions. Ordering uses `field:asc` / `field:desc`. `match` runs a full-text (inverted-index) word search; `matchPrefix` is autocomplete-style prefix search over the same index. Cursor paging is available through `--start-at`, `--start-after`, `--end-at`, and `--end-before`, and any one-shot command can write results with `--output <file>`.
 
 > **Windows PowerShell note:** when passing inline JSON to `--data`, use `--fromfile payload.json` (or `cmd.exe`) instead of `'{"key":"value"}'` — PowerShell 5.1 strips the inner double quotes when invoking native executables.
 
