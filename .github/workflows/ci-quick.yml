@@ -26,3 +26,6 @@ jobs:
 
       - name: check (locked, incl. tests)
         run: cargo check --tests
+
+      - name: package dry-run (locked)
+        run: cargo publish --locked --dry-run

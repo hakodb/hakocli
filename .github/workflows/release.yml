@@ -1,0 +1,23 @@
+name: release
+
+# crates.io publishing for the CLI. Tag v* to release: the version bump is
+# landed on main via PR before the tag, and Cargo.lock travels with it.
+# No binaries are built here; consumers install this crate with cargo.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  publish-crate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish to crates.io
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_TOKEN }}
