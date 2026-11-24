@@ -15,6 +15,8 @@ use hakodb::query::filter::Operator;
 use hakodb::query::query::{AggregateOp, Query};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use serde::ser::{SerializeMap, SerializeSeq};
+use serde::Serialize;
 use serde_json::{json, Map, Value as JsonValue};
 
 #[cfg(feature = "net-sync")]
@@ -813,7 +815,7 @@ fn read_payload_input(data: Option<&str>, fromfile: Option<&str>) -> Result<Stri
     Ok(buf)
 }
 
-fn emit_json(value: &JsonValue, output: Option<&str>) -> Result<()> {
+fn emit_json<T: Serialize + ?Sized>(value: &T, output: Option<&str>) -> Result<()> {
     // Stream pretty JSON instead of building one full String first. The
     // emitted bytes are identical to `to_string_pretty` + `println!`.
     if let Some(path) = output {
@@ -1246,10 +1248,7 @@ fn run_query(
         let rows = db.query_projected(q, &fields)?;
         let elapsed = start_time.elapsed();
         let cnt = rows.len();
-        let json_rows: Vec<JsonValue> = rows.into_iter()
-        .map(|(id, fields)| projected_to_json(&id, fields))
-        .collect();
-        emit_json(&JsonValue::Array(json_rows), output)?;
+        emit_json(&ProjectedRows(&rows), output)?;
         if show_count { eprintln!("Results count: {}", cnt); }
         if show_time {
             eprintln!("Execution time: {:?}", elapsed);
@@ -1258,10 +1257,7 @@ fn run_query(
         let rows = db.query(q)?;
         let elapsed = start_time.elapsed();
         let cnt = rows.len();
-        let json_rows: Vec<JsonValue> = rows.into_iter()
-        .map(|(id, doc)| doc_to_json(&id, &doc))
-        .collect();
-        emit_json(&JsonValue::Array(json_rows), output)?;
+        emit_json(&QueryRows(&rows), output)?;
         if show_count { eprintln!("Results count: {}", cnt); }
         if show_time {
             eprintln!("Execution time: {:?}", elapsed);
@@ -1725,6 +1721,157 @@ fn convert_f32_markers(v: Value) -> Result<Value> {
 
 fn fire_to_json(v: &Value) -> JsonValue {
     v.to_json()
+}
+
+/// Serializes a `Value` with exactly the same JSON shape as `Value::to_json`,
+/// without building an intermediate `serde_json::Value` tree.
+struct JValue<'a>(&'a Value);
+
+impl Serialize for JValue<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        match self.0 {
+            Value::Null | Value::ServerTimestamp => s.serialize_unit(),
+            Value::Bool(b) => s.serialize_bool(*b),
+            Value::Int(i) => s.serialize_i64(*i),
+            Value::Float(f) => s.serialize_f64(*f),
+            Value::String(v) => s.serialize_str(v.as_str()),
+            Value::Timestamp(micros) => s.serialize_i64(*micros),
+            Value::Binary(bytes) => {
+                let mut seq = s.serialize_seq(Some(bytes.len()))?;
+                for b in bytes {
+                    seq.serialize_element(b)?;
+                }
+                seq.end()
+            }
+            Value::Reference { collection, doc_id } => {
+                let mut map = s.serialize_map(Some(1))?;
+                map.serialize_entry("__ref__", &format!("{collection}/{doc_id}"))?;
+                map.end()
+            }
+            Value::BlobLink { offset, len } => {
+                let mut map = s.serialize_map(Some(1))?;
+                map.serialize_entry("__blob__", &json!({ "offset": offset, "len": len }))?;
+                map.end()
+            }
+            Value::Map(fields) => {
+                let mut entries: Vec<(&str, &Value)> =
+                    fields.iter().map(|(k, v)| (k.as_ref(), v)).collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                let mut map = s.serialize_map(Some(entries.len()))?;
+                for (k, v) in entries {
+                    map.serialize_entry(k, &JValue(v))?;
+                }
+                map.end()
+            }
+            Value::Array(items) => {
+                let mut seq = s.serialize_seq(Some(items.len()))?;
+                for v in items {
+                    seq.serialize_element(&JValue(v))?;
+                }
+                seq.end()
+            }
+        }
+    }
+}
+
+enum JEntry<'a> {
+    Field(&'a str, &'a Value),
+    Id(&'a str),
+    Time(i64),
+}
+
+impl Serialize for JEntry<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            JEntry::Field(_, v) => JValue(v).serialize(s),
+            JEntry::Id(v) => s.serialize_str(v),
+            JEntry::Time(v) => s.serialize_i64(*v),
+        }
+    }
+}
+
+/// Stream a decoded row directly to JSON. `serde_json::Map` is a BTreeMap,
+/// so keys (including the synthetic `id`) are emitted in sorted order.
+struct QueryRow<'a> {
+    id: &'a str,
+    doc: &'a HakoDoc,
+}
+
+impl Serialize for QueryRow<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut entries: Vec<(&str, JEntry<'_>)> = self
+            .doc
+            .fields
+            .iter()
+            .filter(|(k, _)| k.as_ref() != "id")
+            .map(|(k, v)| (k.as_ref(), JEntry::Field(k.as_ref(), v)))
+            .collect();
+        entries.push(("id", JEntry::Id(self.id)));
+        entries.push(("_time", JEntry::Time(self.doc._time)));
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        let mut map = s.serialize_map(Some(entries.len()))?;
+        for (_, entry) in entries {
+            map.serialize_entry(match &entry {
+                JEntry::Field(k, _) => *k,
+                JEntry::Id(_) => "id",
+                JEntry::Time(_) => "_time",
+            }, &entry)?;
+        }
+        map.end()
+    }
+}
+
+struct QueryRows<'a>(&'a [(String, HakoDoc)]);
+
+impl Serialize for QueryRows<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut seq = s.serialize_seq(Some(self.0.len()))?;
+        for (id, doc) in self.0 {
+            seq.serialize_element(&QueryRow { id, doc })?;
+        }
+        seq.end()
+    }
+}
+
+struct ProjectedRow<'a> {
+    id: &'a str,
+    fields: &'a [(String, Value)],
+}
+
+impl Serialize for ProjectedRow<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        let has_id = self.fields.iter().any(|(k, _)| k == "id");
+        let mut entries: Vec<(&str, JEntry<'_>)> = self
+            .fields
+            .iter()
+            .map(|(k, v)| (k.as_str(), JEntry::Field(k.as_str(), v)))
+            .collect();
+        if !has_id {
+            entries.push(("id", JEntry::Id(self.id)));
+        }
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        let mut map = s.serialize_map(Some(entries.len()))?;
+        for (_, entry) in entries {
+            map.serialize_entry(match &entry {
+                JEntry::Field(k, _) => *k,
+                JEntry::Id(_) => "id",
+                JEntry::Time(_) => "_time",
+            }, &entry)?;
+        }
+        map.end()
+    }
+}
+
+struct ProjectedRows<'a>(&'a [(String, Vec<(String, Value)>)]);
+
+impl Serialize for ProjectedRows<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut seq = s.serialize_seq(Some(self.0.len()))?;
+        for (id, fields) in self.0 {
+            seq.serialize_element(&ProjectedRow { id, fields })?;
+        }
+        seq.end()
+    }
 }
 
 fn doc_to_json(id: &str, doc: &HakoDoc) -> JsonValue {
@@ -2372,6 +2519,55 @@ mod op_parse_tests {
         assert_eq!(aggregate_result_key(&AggregateOp::Avg("age".into())), "avg_age");
         assert_eq!(aggregate_result_key(&AggregateOp::Min("age".into())), "min_age");
         assert_eq!(aggregate_result_key(&AggregateOp::Max("age".into())), "max_age");
+    }
+
+    #[test]
+    fn streamed_query_rows_match_value_array() {
+        let mut doc = HakoDoc::default();
+        doc.insert("z", Value::String("x".into()));
+        doc.insert("id", Value::String("shadow".into()));
+        doc.insert("n", Value::Int(7));
+        doc.insert(
+            "nested",
+            Value::Map(vec![
+                ("b".into(), Value::Int(2)),
+                ("a".into(), Value::String("y".into())),
+            ]),
+        );
+        doc.insert("arr", Value::Array(vec![Value::Int(1), Value::Bool(true)]));
+        let rows = vec![("real".to_string(), doc)];
+        let old: Vec<JsonValue> = rows
+            .iter()
+            .map(|(id, doc)| doc_to_json(id, doc))
+            .collect();
+        let expected = serde_json::to_string_pretty(&JsonValue::Array(old)).expect("pretty");
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("hako-cli-rows-{nanos}.json"));
+        emit_json(&QueryRows(&rows), Some(path.to_str().unwrap())).expect("emit");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), expected);
+        let _ = std::fs::remove_file(path);
+
+        let projected = vec![(
+            "p".to_string(),
+            vec![
+                ("b".to_string(), Value::Int(2)),
+                ("a".to_string(), Value::String("y".into())),
+            ],
+        )];
+        let old_projected: Vec<JsonValue> = projected
+            .iter()
+            .map(|(id, fields)| projected_to_json(id, fields.clone()))
+            .collect();
+        let expected_projected =
+            serde_json::to_string_pretty(&JsonValue::Array(old_projected)).expect("pretty");
+        let path2 = std::env::temp_dir().join(format!("hako-cli-proj-{nanos}.json"));
+        emit_json(&ProjectedRows(&projected), Some(path2.to_str().unwrap())).expect("emit");
+        assert_eq!(std::fs::read_to_string(&path2).expect("read"), expected_projected);
+        let _ = std::fs::remove_file(path2);
     }
 
     #[test]
