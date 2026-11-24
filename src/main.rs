@@ -757,32 +757,28 @@ fn apply_config(cli: &mut Cli, fc: &FileConfig) -> Result<()> {
 }
 
 fn open_db(cli: &Cli) -> Result<Hako> {
-    let mut cfg = HakoConfig::default();
-
-    cfg.durability_mode = match cli.durability.unwrap_or(DurabilityArg::OnCommit) {
-        DurabilityArg::Always => DurabilityMode::Always,
-        DurabilityArg::Interval => DurabilityMode::Interval,
-        DurabilityArg::Manual => DurabilityMode::Manual,
-        DurabilityArg::OnCommit => DurabilityMode::OnCommit,
-    };
-
-        // 2. Set Encryption Key
-    cfg.encryption_key = cli.encryption_key.clone();
-
-    // 3. Set Encrypted Collections (Convert comma-string to HashSet)
-    if let Some(cols_str) = &cli.encrypted_cols {
-        let set: std::collections::HashSet<String> = cols_str
+    let encrypted_cols = cli.encrypted_cols.as_ref().map(|cols_str| {
+        cols_str
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .collect();
-        cfg.encrypted_cols = Some(set);
-    }
-
+            .collect::<std::collections::HashSet<String>>()
+    });
+    let cfg = HakoConfig {
+        durability_mode: match cli.durability.unwrap_or(DurabilityArg::OnCommit) {
+            DurabilityArg::Always => DurabilityMode::Always,
+            DurabilityArg::Interval => DurabilityMode::Interval,
+            DurabilityArg::Manual => DurabilityMode::Manual,
+            DurabilityArg::OnCommit => DurabilityMode::OnCommit,
+        },
+        encryption_key: cli.encryption_key.clone(),
+        encrypted_cols,
+        ..Default::default()
+    };
 
     Hako::open(cli_db(cli), cfg)
         .with_context(|| format!("failed to open db at {}", cli_db(cli)))
-        .map(|db| {
+        .inspect(|db| {
             // ponytail: open() returns while index recovery still runs, and
             // queries issued first silently plan FullCollection (cursor
             // bounds ignored, pages repeat) — so wait for READINESS here.
@@ -796,7 +792,6 @@ fn open_db(cli: &Cli) -> Result<Hako> {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            db
         })
 }
 
@@ -1101,6 +1096,20 @@ fn parse_composite_fields(input: &str) -> Result<Vec<(String, SortDirection)>> {
     Ok(out)
 }
 
+/// Key used by the engine's aggregate result map for one operation.
+/// Keeping this mapping in one place lets a multi-op query be executed once
+/// while still emitting the historical per-operation JSON array.
+fn aggregate_result_key(op: &AggregateOp) -> String {
+    match op {
+        AggregateOp::Count => "count".to_string(),
+        AggregateOp::Sum(field) => format!("sum_{field}"),
+        AggregateOp::Avg(field) => format!("avg_{field}"),
+        AggregateOp::Min(field) => format!("min_{field}"),
+        AggregateOp::Max(field) => format!("max_{field}"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_query(
     db: &Hako,
     collection: &str,
@@ -1145,7 +1154,7 @@ fn run_query(
         q = q.where_filter(field, Operator::Match, Value::String(text.to_string()));
     }
     for order_spec in order_by {
-        let (field, asc) = parse_order(&order_spec)?;
+        let (field, asc) = parse_order(order_spec)?;
         q = q.order_by(field, asc);
     }
     if let Some(limit) = limit { q = q.limit(limit); }
@@ -1195,20 +1204,28 @@ fn run_query(
 
     // --- Aggregates (using improved core aggregate executor) ---
     if !aggregates.is_empty() {
-        let mut agg_results = Vec::new();
+        // Build one query with every requested operation: the engine scans
+        // once and returns a keyed map. Reshape it into the same array of
+        // single-operation objects the CLI has always printed.
+        let mut agg_query = q.clone();
+        let mut ops = Vec::with_capacity(aggregates.len());
         for spec in aggregates {
             let op = parse_aggregate_spec(spec)?;
-            let mut agg_query = q.clone();
-            agg_query = match op {
-                AggregateOp::Count => agg_query.aggregate(AggregateOp::Count),
-                AggregateOp::Sum(field) => agg_query.aggregate(AggregateOp::Sum(field)),
-                AggregateOp::Avg(field) => agg_query.aggregate(AggregateOp::Avg(field)),
-                AggregateOp::Min(field) => agg_query.aggregate(AggregateOp::Min(field)),
-                AggregateOp::Max(field) => agg_query.aggregate(AggregateOp::Max(field)),
-            };
-            let out = db.execute_aggregation(agg_query)?;
-            agg_results.push(serde_json::to_value(out)?);
+            ops.push(op.clone());
+            agg_query = agg_query.aggregate(op);
         }
+        let out = db.execute_aggregation(agg_query)?;
+        let agg_results: Vec<JsonValue> = ops
+            .iter()
+            .map(|op| {
+                let key = aggregate_result_key(op);
+                let mut obj = Map::new();
+                if let Some(value) = out.get(&key) {
+                    obj.insert(key, json!(value));
+                }
+                JsonValue::Object(obj)
+            })
+            .collect();
         let elapsed = start_time.elapsed();
         emit_json(&JsonValue::Array(agg_results), output)?;
         if show_time {
@@ -2340,6 +2357,15 @@ mod op_parse_tests {
     #[test]
     fn f32_marker_rejects_non_numbers() {
         assert!(json_to_fire(serde_json::json!({ "__f32__": [1, "x"] })).is_err());
+    }
+
+    #[test]
+    fn aggregate_result_keys_match_engine_map() {
+        assert_eq!(aggregate_result_key(&AggregateOp::Count), "count");
+        assert_eq!(aggregate_result_key(&AggregateOp::Sum("age".into())), "sum_age");
+        assert_eq!(aggregate_result_key(&AggregateOp::Avg("age".into())), "avg_age");
+        assert_eq!(aggregate_result_key(&AggregateOp::Min("age".into())), "min_age");
+        assert_eq!(aggregate_result_key(&AggregateOp::Max("age".into())), "max_age");
     }
 }
 
